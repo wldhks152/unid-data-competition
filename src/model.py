@@ -24,10 +24,10 @@ def make_model(seed, balanced=True):
         )
 
 
-def tune_class_weights(P, y, classes, rounds=3):
+def tune_class_weights(P, y, classes, rounds=3, lo=0.4, hi=3.0):
     """Macro-F1 직접 최대화: argmax(P * w)의 클래스별 배율 w를 좌표 탐색으로 찾는다.
     OOF 확률(실험 단위 분할)로만 튜닝 → Test 정보 미사용. 범위를 좁혀 과적합 억제."""
-    grid = np.exp(np.linspace(np.log(0.4), np.log(3.0), 21))
+    grid = np.exp(np.linspace(np.log(lo), np.log(hi), 21))
     w = np.ones(len(classes))
     best = f1_score(y, classes[(P * w).argmax(1)], average="macro")
     for _ in range(rounds):

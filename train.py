@@ -17,7 +17,7 @@ import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import StratifiedKFold
 
-from src.ensemble import blend_proba, fit_team, team_image_features
+from src.ensemble import blend_proba, fit_team, team_image_features, team_proba
 from src.data import COND, EVAL_VERSIONS, KEY, T, TRAIN_VERSIONS, VER_W, Y, find_csv, load, subsample
 from src.features import causality_check, feature_columns, make_features
 from src.images import add_image_features
@@ -48,6 +48,11 @@ def main():
     ap.add_argument("--no_images", action="store_true", help="(기본값과 같음, 하위 호환용)")
     ap.add_argument("--cache_dir", default="cache", help="이미지 통계 캐시 폴더")
     ap.add_argument("--alpha", type=float, default=0.5, help="앙상블에서 우리 LightGBM 비율 (나머지는 팀원 CatBoost)")
+    ap.add_argument("--ens_oof", action="store_true",
+                    help="CatBoost도 같은 fold로 학습해 앙상블 OOF를 만들고, α와 w를 앙상블 OOF로 튜닝")
+    ap.add_argument("--alphas", type=float, nargs="+", default=[0.25, 0.5, 0.75], help="--ens_oof에서 비교할 α 후보")
+    ap.add_argument("--w_lo", type=float, default=0.4, help="클래스 배율 탐색 하한")
+    ap.add_argument("--w_hi", type=float, default=3.0, help="클래스 배율 탐색 상한")
     ap.add_argument("--no_catboost", action="store_true", help="팀원 CatBoost 앙상블 끄기 (LightGBM 단독)")
     ap.add_argument("--holdout_valid", action="store_true",
                     help="비교용: Train만으로 학습하고 제공 Validation(19개 실험)으로 평가. 제출용 아님")
@@ -93,6 +98,8 @@ def main():
         strata = ex.tr_method.astype(str)
     skf = StratifiedKFold(n_splits=a.folds, shuffle=True, random_state=a.seed)
     models, oof = [], []
+    ens_oof = a.ens_oof and not a.no_catboost
+    raw_ver = {f"k{k}o{o}": subsample(tv, k, o) for k, o in EVAL_VERSIONS} if ens_oof else None
     for fold, (tr_i, va_i) in enumerate(skf.split(ex.index, strata)):
         tr_g, va_g = set(ex.index[tr_i]), set(ex.index[va_i])
         trn = F[F.grp.isin(tr_g)]
@@ -100,6 +107,7 @@ def main():
         m = make_model(a.seed + fold, balanced=not a.no_balance)
         m.fit(trn[feats], trn[Y])
         models.append(m)
+        team_f = fit_team(tv[tv[KEY].isin(tr_g)], timg) if ens_oof else None
         msg = []
         for k, o in EVAL_VERSIONS:
             v = F[F.grp.isin(va_g) & (F.ver == f"k{k}o{o}")]
@@ -109,6 +117,11 @@ def main():
             dd["ver"], dd["fold"] = f"k{k}o{o}", fold
             for c in GATE_COLS:
                 dd[c] = v[c].values
+            if team_f is not None:
+                rv = raw_ver[f"k{k}o{o}"]
+                Pc = team_proba(team_f, rv[rv.grp.isin(va_g)], timg, v.sample_id.values, list(m.classes_))
+                for j, c in enumerate(m.classes_):
+                    dd[f"q{c}"] = Pc[:, j]
             oof.append(dd)
             msg.append(f"{5 * k}s F1={f1_score(v[Y], m.classes_[P.argmax(1)], average='macro'):.3f}")
         print(f"  fold{fold}  " + "  ".join(msg) + f"  ({time.time() - t0:.0f}s)")
@@ -117,7 +130,7 @@ def main():
     pcols = [f"p{c}" for c in classes]
     oof = pd.concat(oof).reset_index(drop=True)
     P = oof[pcols].to_numpy()
-    w, _ = tune_class_weights(P, oof.y.to_numpy(), classes)
+    w, _ = tune_class_weights(P, oof.y.to_numpy(), classes, lo=a.w_lo, hi=a.w_hi)
     print("\n  클래스 배율 w (Macro-F1 튜닝):", dict(zip(classes.tolist(), np.round(w, 2).tolist())))
 
     print("\n[5] 후처리 선택 (OOF Macro-F1, 가중 = Test 간격 구성 9:1:1)")
@@ -155,6 +168,29 @@ def main():
     bundle = {"models": models, "feats": feats, "classes": classes, "w": w, "post": post,
               "use_images": a.images}
 
+    ens_choice = None
+    if ens_oof:
+        print(f"\n[5a] 앙상블 OOF로 α · w 튜닝 (w 범위 {a.w_lo}~{a.w_hi}, cummax 고정)")
+        Q = oof[[f"q{c}" for c in classes]].to_numpy()
+        y = oof.y.to_numpy()
+        print(f"  {'후보':<22s} {'5s':>7s} {'10s':>7s} {'15s':>7s} {'가중':>7s}  w")
+        res = []
+        for al in [0.0] + list(a.alphas) + [1.0]:
+            Pb = al * P + (1 - al) * Q
+            wa, _ = tune_class_weights(Pb, y, classes, lo=a.w_lo, hi=a.w_hi)
+            for uw, ww in [(False, np.ones(len(classes))), (True, wa)]:
+                pred = cummax_pp(oof, classes[(Pb * ww).argmax(1)])
+                sc = {v: f1_score(y[(oof.ver == v).to_numpy()], pred[(oof.ver == v).to_numpy()], average="macro")
+                      for v in VER_W}
+                sc["weighted"] = weighted(sc)
+                res.append((sc["weighted"], al, uw, ww))
+                name = f"a={al:.2f} " + ("+w+cummax" if uw else "cummax")
+                print(f"  {name:<22s} {sc['k1o0']:7.4f} {sc['k2o0']:7.4f} {sc['k3o0']:7.4f} {sc['weighted']:7.4f}"
+                      + (f"  {np.round(ww, 2).tolist()}" if uw else ""))
+        best = max([r for r in res if 0 < r[1] < 1] or res, key=lambda r: r[0])
+        ens_choice = {"alpha": best[1], "use_w": best[2], "w": best[3], "score": best[0]}
+        print(f"  → 선택 (0<α<1 중): α={best[1]:.2f}, use_w={best[2]}, 가중 {best[0]:.4f}")
+
     if not a.no_catboost:
         print(f"\n[5b] 팀원 CatBoost v1 학습 (같은 데이터 {tv[KEY].nunique()}개 실험, 5초 원본 행) → 앙상블 α={a.alpha}")
         t0 = time.time()
@@ -162,7 +198,12 @@ def main():
         bundle["alpha"] = a.alpha
         # 앙상블 후처리는 Validation 비교(ensemble_eval.py)에서 가장 좋았던 +w+cummax로 고정
         bundle["post"] = post = {"method": "cummax", "use_w": True, "hmm": None, "gate": "none"}
-        print(f"  완료 ({time.time() - t0:.0f}s) · 앙상블 후처리 = +w+cummax (Validation 비교 결과로 고정)")
+        if ens_choice is not None:  # 앙상블 OOF 튜닝 결과로 덮어씀
+            a.alpha = bundle["alpha"] = ens_choice["alpha"]
+            bundle["w"] = ens_choice["w"]
+            post["use_w"] = ens_choice["use_w"]
+        print(f"  완료 ({time.time() - t0:.0f}s) · 앙상블 α={bundle['alpha']:.2f}, 후처리 = "
+              f"{'+w+' if post['use_w'] else ''}cummax, w={np.round(bundle['w'], 2).tolist()}")
 
     holdout = None
     if a.holdout_valid:
