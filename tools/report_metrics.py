@@ -1,6 +1,6 @@
 """발표용 집계 지표 — 최종 블렌드의 단계별 F1 · 혼동행렬 (Train 5-fold OOF / Validation 홀드아웃).
 
-    python tools/report_metrics.py --stack_dir runs/stack_trv --members lgb rn18s --weights 0.5 0.5 --post cummax
+    python tools/report_metrics.py --stack_dir runs/stack_trv --members lgb dino seq_gru --weights 0.4 0.4 0.2 --post cummax
 집계값만 출력·저장한다 (reports/metrics.json). 행·ID·개별 예측은 저장하지 않는다.
 """
 import argparse
@@ -20,8 +20,8 @@ from src.model import cummax_pp  # noqa: E402
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--stack_dir", default="runs/stack_trv")
-    ap.add_argument("--members", nargs="+", default=["lgb", "rn18s"])
-    ap.add_argument("--weights", nargs="+", type=float, default=[0.5, 0.5])
+    ap.add_argument("--members", nargs="+", default=["lgb", "dino", "seq_gru"])
+    ap.add_argument("--weights", nargs="+", type=float, default=[0.4, 0.4, 0.2])
     ap.add_argument("--post", default="cummax", choices=["raw", "cummax"])
     ap.add_argument("--holdout_fold", type=int, default=5, help="Validation이 들어 있는 fold 번호")
     ap.add_argument("--out", default="reports/metrics.json")

@@ -1,6 +1,6 @@
 # Uni-D 배터리 열폭주 6단계 분류
 
-**현재 후보 (최종 아님, 계속 개선 중): LightGBM(과거 방향 시계열·사건 피처) 0.5 + 팀원 CatBoost v1 0.5 확률 앙상블 → 클래스 배율 + 단계 누적최대(cummax) 후처리**
+**최종 모델: LightGBM(과거 방향 시계열·사건 피처) 0.4 + DINOv2 이미지 CatBoost 0.4 + 인과 GRU 시퀀스 모델 0.2 확률 앙상블 → 단계 누적최대(cummax) 후처리.** 열화상 이미지와 센서를 함께 사용해요.
 
 ## 팀 정보
 - 팀명: <팀명>
@@ -9,7 +9,7 @@
 ## 개발 환경
 - OS: <예: Ubuntu 22.04>  (`lsb_release -d`로 확인)
 - Python: 3.10
-- GPU: 사용하지 않음 (LightGBM CPU 학습)
+- GPU: NVIDIA GPU 1장 (학습: LightGBM OpenCL, CatBoost GPU, PyTorch CUDA). 추론은 GPU가 없으면 CPU로 동작
 - 라이브러리: `requirements.txt` 참고
 
 ## 파일 구성
@@ -22,19 +22,44 @@
 | `src/team_catboost.py` | 팀원 CatBoost v1의 피처·모델 코드 (브랜치 `experiments/catboost_v1`에서 그대로 가져옴) |
 | `src/postprocess.py` | 단조 단계 HMM forward 필터 (선택적 후처리) |
 | `src/data.py` | 데이터 로드, 상수, 측정 간격 다운샘플링 |
-| `train.py` | Train+Validation으로 실험 단위 K-fold 학습·평가, 가중치 저장 |
-| `test.py` | 입력 CSV에 들어 있는 행만으로 추론하고 제출 파일 생성 |
-| `tune_pp.py` | (선택) OOF로 후처리 방식 비교·적용 |
+| `src/members.py` | 스태킹 멤버 학습·예측 (lgb, dino 등). 같은 실험 단위 fold 사용 |
+| `src/dino.py` | DINOv2-small 동결 임베딩 추출 (배치 크기 고정, 행 순서와 무관) |
+| `src/rn18.py`, `src/rn18_encoder.py` | 이미지 임베딩 + 팀원 피처 CatBoost 멤버 (dino 멤버도 이 코드로 추론) |
+| `seq/`, `train_seq.py` | 인과 GRU 시퀀스 모델 (과거 행만 보는 단방향 GRU) 학습·추론 |
+| `stack.py` | Train 5-fold + Validation 홀드아웃으로 멤버별 OOF와 가중치 저장 |
+| `tools/make_final.py` | 멤버·블렌드 가중치·후처리를 `model.joblib` 하나로 고정 |
+| `tools/check_submission.py` | 제출 전 재현성·이미지 사용 점검 |
+| `tools/report_metrics.py` | 발표용 단계별 F1·혼동행렬 (집계값만) |
+| `tools/get_dinov2.py` | DINOv2-small 가중치 내려받기 (revision 고정, 해시 기록) |
+| `train.py` | (초기 버전) Train+Validation K-fold 학습 |
+| `test.py` | 입력 CSV에 들어 있는 행만으로 추론하고 제출 파일 생성, 누수 자동 검사 |
 | `eda.py` | 데이터 점검 |
-| `ensemble_eval.py` | (비교용) 두 모델 단독·앙상블 비율별 Validation 점수 |
-| `model.joblib` | 학습된 가중치 (LightGBM fold 모델 5개 + 팀원 CatBoost 1개 + 피처 목록 + 앙상블 비율 + 클래스 배율 + 후처리 설정). 재학습 없이 `test.py`만으로 결과 재현 |
+| `model.joblib` | 최종 가중치 (LightGBM 6개 + DINOv2 CatBoost 6개 + GRU 6개 + 피처 목록 + 블렌드 가중치 + 후처리 설정) |
+| `weights/` | 동결 사전학습 이미지 인코더 가중치 (`dinov2-small/`, `encoder/`=ResNet18) |
+
+## 최종 모델 구성
+| 멤버 | 가중치 | 입력 | 모델 |
+|---|---|---|---|
+| `lgb` | 0.4 | 센서·이미지 통계 기반 과거 방향 시계열 피처 306개 (아래 "시계열 피처 구성") | LightGBM, 5/10/15초 솎아낸 행으로 증강 학습 |
+| `dino` | 0.4 | 팀원 CatBoost v1 피처 33개 + 현재 행 센서 13개 + 열화상 DINOv2-small 임베딩 384차원 | CatBoost (GPU) |
+| `seq_gru` | 0.2 | 실험별 센서 시퀀스 (현재값·첫 관측 대비 변화·직전 대비 변화율, Δt, 경과시간, 실험 조건) | 단방향 2층 GRU (hidden 128), 처음부터 학습. 각 시점 출력은 그 시점까지의 행만 봄 |
+
+- 세 멤버의 클래스 확률을 위 가중치로 더한 뒤 argmax, 실험 안에서 지금까지 예측한 단계의 누적 최댓값(cummax)을 최종 단계로 써요. 과거 예측만 사용해요.
+- 각 멤버는 fold 모델 5개 + Train 전체 모델 1개(GRU는 fold마다 같은 설정)의 확률 평균으로 추론해요.
+- `model.joblib`에 세 멤버의 가중치, 피처 목록, 블렌드 가중치, 후처리 설정이 모두 들어 있어요. 재학습 없이 `test.py`만으로 결과를 재현해요.
 
 ## 실행 방법
 ```bash
 pip install -r requirements.txt
+python tools/get_dinov2.py          # DINOv2-small 가중치 1회 내려받기 (저장소에 이미 포함되어 있으면 생략)
 
-# 학습 (Train+Validation 전체 사용, LightGBM + CatBoost 앙상블)
-python train.py --data_dir <battery_data_light 경로> --model_out model.joblib
+# 학습 (Train만 학습, Validation은 홀드아웃)
+python stack.py --data_dir <battery_data_light 경로> --splits train --holdout_valid \
+                --members lgb dino --out_dir runs/stack_trv
+python train_seq.py --data_dir <battery_data_light 경로> --model gru --out_dir runs/stack_trv \
+                    --folds_json runs/stack_trv/folds.json --holdout_valid
+python tools/make_final.py --members lgb=runs/stack_trv/lgb.joblib dino=runs/stack_trv/dino.joblib \
+                           seq_gru=runs/stack_trv/seq_gru.joblib --weights 0.4 0.4 0.2 --post cummax --out model.joblib
 
 # 추론
 python test.py --input <battery_data_light 경로>/test/test.csv \
@@ -46,22 +71,22 @@ python test.py --input <battery_data_light 경로>/test/test.csv \
 - 입력 CSV가 잘려 있으면 `sample_submission` 순서를 따르되 **입력에 있는 행만** 출력해요.
 
 ## 학습·검증 구성
-- 학습 데이터: Train+Validation (실험 97개)
-- 검증 방법: Train+Validation을 합친 뒤 **실험 단위 Stratified K-fold(5)**. 층화 기준은 tr_method×bat_class예요. 같은 실험의 행이 학습과 검증에 동시에 들어가지 않아요.
+- **학습 데이터: Train 실험만.** 제공 Validation 19개 실험은 학습에 한 번도 넣지 않고 마지막 홀드아웃으로만 썼어요.
+  - Train+Validation을 모두 학습에 넣은 버전은 Public 점수가 매번 더 낮았어요 (예: 0.8773 vs Train만 0.8879). 그래서 Validation은 모델 선택 기준으로 남겼어요.
+- **검증 방법**
+  1. Train 실험 단위 Stratified 5-fold (층화 기준 tr_method×bat_class, 칸이 너무 작으면 tr_method, `runs/stack_trv/folds.json`). 같은 실험의 행이 학습과 검증에 동시에 들어가지 않아요.
+  2. Validation 홀드아웃: Train 전체로 학습한 모델로 Validation 19개 실험을 예측 (6번째 fold).
   - Test에는 5/10/15초 간격이 섞여 있어요. 그래서 검증 실험을 10초·15초로 솎아낸 버전으로도 평가하고, 9:1:1로 가중 평균해요.
-- LightGBM: 5개 fold 모델의 확률 평균
-- CatBoost (팀원 v1, 피처 33개): Train+Validation 전체로 1회 학습
-- 앙상블: 확률을 LightGBM 0.5 : CatBoost 0.5로 평균 → 클래스 배율 → cummax
-- 검증 점수 (제공 Validation 19개 실험, 두 모델 모두 Train만 학습, `python train.py ... --holdout_valid`):
+- **모델 선택 기준**: Train 5-fold, Validation 홀드아웃 두 점수 중 **낮은 쪽**이 가장 높은 조합. Public은 Test의 30%·11개 실험이라 변동이 커서 보조 지표로만 썼어요.
 
-| 모델 | Validation Macro F1 (5/10/15초 9:1:1 가중) |
-|---|---|
-| 팀원 CatBoost v1 단독 | 0.750 |
-| LightGBM 단독 (+w) | 0.897 |
-| **앙상블 α=0.5 (+w+cummax)** | **0.903** |
-| 앙상블 α=0.25 (+w+cummax) | 0.905 |
+| 조합 (cummax) | Train 5-fold | Validation 홀드아웃 | Public |
+|---|---|---|---|
+| LightGBM 0.5 + 팀원 v2(ResNet18+센서) 0.5 | 0.9059 | 0.8860 | 0.8879 |
+| LightGBM 0.3 + DINOv2 CatBoost 0.7 | 0.8953 | 0.8875 | 0.8899 |
+| **LightGBM 0.4 + DINOv2 CatBoost 0.4 + GRU 0.2 (최종)** | **0.9030** | **0.9105** | **0.8917** |
 
-  α=0.25와 0.5의 차이가 작고 0.25는 Validation에서 고른 값이라, 치우치지 않은 0.5를 채택했어요.
+- 시도했지만 채택하지 않은 것: 단계군별 가중치, seed 평균(LightGBM·CatBoost·GRU 3-seed), 2↔3단계 전용 보정 모델, TCN 시퀀스 모델, Train+Validation 학습. 모두 두 검증 점수의 최저점을 올리지 못했어요.
+- 단계별 F1과 혼동행렬: `python tools/report_metrics.py --members lgb dino seq_gru --weights 0.4 0.4 0.2` (`reports/metrics.json`, 집계값만 저장)
 
 ## 시계열 피처 구성
 같은 `experiment_id` 안에서 `relative_time_s` 순으로 정렬한 뒤, **현재 행과 그 이전 행만** 사용해요.
@@ -79,10 +104,12 @@ python test.py --input <battery_data_light 경로>/test/test.csv \
 - 실험 조건 4종(bat_class, bat_cc, soc_status, tr_method), 경과시간
 - 학습 데이터 증강: Train 실험을 10초·15초 간격으로 솎아낸 버전을 함께 학습해요.
 - 후처리: label이 실험 안에서 단조 증가한다는 점을 이용해 **지금까지의 예측 단계 누적 최댓값**을 써요. 과거 예측만 사용해요.
-- 클래스 배율: Macro F1을 높이려고 OOF 확률로 클래스별 배율을 튜닝해요.
 - **미래 시점 관측과 실험 전체 기준 통계(전체 평균, 종료 시각, 전체 행 수 등)는 사용하지 않습니다.**
 
 ## 사용한 사전학습 모델
+GRU 시퀀스 모델과 LightGBM은 사전학습 가중치 없이 대회 데이터로 처음부터 학습했어요. 사전학습 모델은 이미지 특징 추출에만 썼고, 가중치는 동결했어요.
+
+### ResNet18 (비교 실험용, 최종 모델에는 미사용)
 | 항목 | 내용 |
 |---|---|
 | 모델 | ResNet18, ImageNet-1K 사전학습 (torchvision `ResNet18_Weights.IMAGENET1K_V1`) |
@@ -93,7 +120,7 @@ python test.py --input <battery_data_light 경로>/test/test.csv \
 | 저장 위치 | `weights/encoder/` (16MiB 이하 조각 3개 + `manifest.json`의 해시로 검증, 추론 때 내려받지 않음) |
 | 코드 | `src/rn18_encoder.py` (전처리·검증), `src/rn18.py` (스태킹 멤버: 팀원 CatBoost 피처 33개 + 임베딩 512개) |
 
-### DINOv2-small (실험 중, 최종 채택 시 기재 유지)
+### DINOv2-small (최종 모델 `dino` 멤버에서 사용)
 | 항목 | 내용 |
 |---|---|
 | 모델 | DINOv2 ViT-S/14 (`facebook/dinov2-small`, Meta AI) |
@@ -101,6 +128,7 @@ python test.py --input <battery_data_light 경로>/test/test.csv \
 | 버전 | `weights/dinov2-small/manifest.json`의 revision(커밋 해시)과 SHA-256 |
 | 라이선스 | Apache-2.0 |
 | 사용 방식 | 가중치 **동결**, pooler 출력 384차원만 특징으로 사용 (미세조정 없음). 이미지마다 독립 계산 |
+| 저장 위치 | `weights/dinov2-small/` (`manifest.json`의 revision·SHA-256으로 검증, 추론 때 내려받지 않음) |
 | 코드 | `src/dino.py`, 내려받기 `tools/get_dinov2.py` (학습 전 1회, 추론 때는 내려받지 않음) |
 
 ## 제출 전 점검
