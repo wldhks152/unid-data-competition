@@ -109,4 +109,7 @@ def predict_labels(bundle, F, post=None, P=None):
         pred = cummax_pp(F, pred)
     elif post["method"].startswith("cummax") and post["method"][6:].isdigit():  # cummax2, cummax3 ...
         pred = stable_cummax_pp(F, pred, int(post["method"][6:]))
+    elif post.get("module"):  # 다른 브랜치 후처리: POSTS[이름](frame, P, w) -> 라벨 (gate 이전 원래 확률 사용)
+        import importlib
+        pred = np.asarray(importlib.import_module(post["module"]).POSTS[post["method"]](F, P, w)).astype(int)
     return pred.astype(int), P

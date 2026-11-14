@@ -93,7 +93,9 @@ def main():
             bundle["alpha"] = a.alpha
         elif a.alpha < 1:
             sys.exit("[오류] 이 model.joblib에는 CatBoost가 없어 --alpha < 1을 쓸 수 없습니다.")
-    ens = f"앙상블(LightGBM 비율 {np.round(bundle['alpha'], 2).tolist()})" if "team" in bundle else "LightGBM 단독"
+    is_stack = "members" in bundle
+    needs_team = "team" in bundle or (is_stack and any(m["kind"] == "team" for m in bundle["members"].values()))
+    ens = ("스태킹(" + ", ".join(f"{n}={np.round(np.asarray(w), 2).tolist()}" for n, w in bundle["blend"].items()) + ")") if is_stack else f"앙상블(LightGBM 비율 {np.round(bundle['alpha'], 2).tolist()})" if "team" in bundle else "LightGBM 단독"
     print(f"  모델: {a.model}  {ens}, 후처리={bundle['post']['method']}, w={bundle['post']['use_w']}, "
           f"gate={bundle['post'].get('gate', 'none')}, "
           f"이미지={bundle.get('use_images', False)}")
@@ -102,7 +104,7 @@ def main():
     root = a.image_root or os.path.dirname(os.path.abspath(a.input))
     if bundle.get("use_images", False):
         df = add_image_features(df, root)
-    timg = team_image_features(df, root) if "team" in bundle else None
+    timg = team_image_features(df, root) if needs_team else None
 
     pred = predict_df(bundle, df, timg)
     if not a.skip_check:

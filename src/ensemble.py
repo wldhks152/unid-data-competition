@@ -48,7 +48,10 @@ def team_proba(team, df, img, sample_ids, classes):
 
 def blend_proba(bundle, F, df=None, img=None):
     """F(우리 피처, make_features 결과)의 행 순서대로 앙상블 확률을 반환.
-    bundle에 'team'이 없으면 우리 모델 확률만 반환."""
+    bundle에 'team'이 없으면 우리 모델 확률만 반환. 'members'가 있으면 스태킹 모델(blend.py)."""
+    if "members" in bundle:
+        from .members import stack_proba
+        return stack_proba(bundle, F, df, img)
     P = np.mean([m.predict_proba(F[bundle["feats"]]) for m in bundle["models"]], axis=0)
     team = bundle.get("team")
     if team is None:
