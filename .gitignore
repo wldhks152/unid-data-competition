@@ -28,3 +28,8 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+
+# 실험 산출물 (train.py가 재생성)
+outputs/
+*.joblib
+submission*.csv
