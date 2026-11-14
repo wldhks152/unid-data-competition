@@ -37,6 +37,28 @@ def _pad(batch, device, noise=0.0):
 
 
 # ---------------------------------------------------------------- 신경망 (GRU/TCN)
+def ord_probs(logits):
+    """순서형(누적 로짓) 출력 → 6클래스 확률. logits[..., k-2] = logit P(단계 ≥ k), k=2..6 (6번째 출력은 안 씀).
+    P(≥k)가 k에 대해 줄어들도록 누적 최소로 보정한다."""
+    q = torch.sigmoid(logits[..., :len(CLASSES) - 1].float())
+    q = torch.cummin(q, dim=-1).values
+    one = torch.ones_like(q[..., :1])
+    zero = torch.zeros_like(q[..., :1])
+    return (torch.cat([one, q], -1) - torch.cat([q, zero], -1)).clamp_min(0)
+
+
+def _ord_loss(out, Y, w):
+    """누적 로짓 손실: k=2..6마다 BCE(logit_k, y ≥ k), 행마다 클래스 가중."""
+    m = Y >= 0
+    z = out[..., :len(CLASSES) - 1].float()[m]
+    y = Y[m]
+    ks = torch.arange(1, len(CLASSES), device=Y.device)
+    tgt = (y[:, None] >= ks[None, :]).float()
+    l = F.binary_cross_entropy_with_logits(z, tgt, reduction="none").sum(-1)
+    ww = w[y]
+    return (l * ww).sum() / ww.sum()
+
+
 def fit_net(cfg, train_seqs, device, seed, log=print):
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -63,7 +85,10 @@ def fit_net(cfg, train_seqs, device, seed, log=print):
             X, Y = _pad([data[j] for j in perm[i:i + bs]], device, cfg.get("noise", 0.0))
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
                 out = net(X)
-            loss = F.cross_entropy(out.float().reshape(-1, len(CLASSES)), Y.reshape(-1), weight=w, ignore_index=-100)
+            if cfg.get("ordinal"):
+                loss = _ord_loss(out, Y, w)
+            else:
+                loss = F.cross_entropy(out.float().reshape(-1, len(CLASSES)), Y.reshape(-1), weight=w, ignore_index=-100)
             if aux23:
                 m23 = (Y == 1) | (Y == 2)
                 if m23.any():
@@ -98,7 +123,8 @@ def predict_net(m, seqs, device, _cache={}):
     out = []
     for s in seqs:  # 실험 하나씩 (패딩 없음) → 다른 실험·미래 행의 영향 없음
         X = torch.as_tensor(sc.transform(s["X"]), device=device)[None]
-        out.append(torch.softmax(net(X).float()[0], -1).cpu().numpy())
+        o = net(X).float()[0]
+        out.append((ord_probs(o) if m["cfg"].get("ordinal") else torch.softmax(o, -1)).cpu().numpy())
     return out
 
 

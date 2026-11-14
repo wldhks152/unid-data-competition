@@ -5,6 +5,7 @@ kind
           그 모듈의 predict_proba(member, F, df, timg) -> (n, 6) 확률(열 순서 1~6)을 호출한다.
   lgb  : LightGBM, 우리 피처(make_features), 5/10/15초 증강 행으로 학습
   cat  : CatBoost, 우리 피처, 5/10/15초 증강 행, 클래스 균형 가중
+  ord  : 순서형 LightGBM ("단계 ≥ k" 이진 5개 → 단조 보정 → 6클래스), 우리 피처
   xgb  : XGBoost (GPU), 우리 피처, 5/10/15초 증강 행, 클래스 균형 가중
   team : 팀원 CatBoost v1 (원본 5초 행 + 팀원 피처 33개)
   rn18s: rn18 + 현재 행 센서 13개 (팀원 v2)
@@ -35,6 +36,31 @@ def make_cat(seed, iterations=1500, depth=7, lr=0.05, gpu=False):
         allow_writing_files=False, verbose=False, **kw)
 
 
+class OrdinalLGB:
+    """순서형 LightGBM: "단계 ≥ k" 이진 분류기 5개(k=2..6). P(≥k)를 k에 대해 단조 감소로 보정(누적 최소)한 뒤
+    P(1)=1−P(≥2), P(k)=P(≥k)−P(≥k+1), P(6)=P(≥6)로 6클래스 확률을 만든다. 각 이진 분류기는 클래스 균형 가중."""
+
+    def __init__(self, seed):
+        self.seed = seed
+        self.models = []
+        self.classes_ = CLASSES
+
+    def fit(self, X, y):
+        y = np.asarray(y)
+        self.models = []
+        for k in CLASSES[1:]:
+            m = make_model(self.seed + int(k))
+            m.fit(X, (y >= k).astype(int))
+            self.models.append(m)
+        return self
+
+    def predict_proba(self, X):
+        q = np.stack([m.predict_proba(X)[:, list(m.classes_).index(1)] for m in self.models], axis=1)
+        q = np.minimum.accumulate(q, axis=1)
+        P = np.concatenate([1 - q[:, :1], q[:, :-1] - q[:, 1:], q[:, -1:]], axis=1)
+        return np.clip(P, 0, None)
+
+
 def make_xgb(seed, gpu=True):
     """XGBoost (GPU: device=cuda, tree_method=hist). 클래스 균형은 sample_weight로."""
     from xgboost import XGBClassifier
@@ -54,6 +80,8 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         m = make_cat(seed, iterations=cat_iters, gpu=gpu)
         m.fit(trn_F[feats].to_numpy(np.float32), trn_F["label"].to_numpy())
         return m
+    if kind == "ord":
+        return OrdinalLGB(seed).fit(trn_F[feats], trn_F["label"])
     if kind == "xgb":  # 라벨 1..6 → 0..5
         from sklearn.utils.class_weight import compute_sample_weight
         y = trn_F["label"].to_numpy().astype(int) - 1
@@ -84,6 +112,8 @@ def predict_member(kind, model, F=None, feats=None, raw=None, timg=None, emb=Non
         return _reorder(model.predict_proba(F[feats]), model.classes_)
     if kind == "cat":
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_)
+    if kind == "ord":
+        return model.predict_proba(F[feats])
     if kind == "xgb":
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_ + 1)
     if kind == "team":
