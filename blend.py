@@ -1,5 +1,5 @@
 """블렌딩 하네스 — 여러 브랜치의 OOF를 받아 멤버 비율 · 클래스 배율 · 후처리를 고르고,
-'바깥 fold 평가'로 선택 편향 없는 점수를 함께 보고한 뒤 model.joblib 하나로 묶는다.
+'메타 교차검증(base 학습 미분리)' 점수를 함께 보고한 뒤 model.joblib 하나로 묶는다.
 
     python blend.py --members lgb cat team seq=runs/seq --stack_dir runs/stack \
                     [--post_module src.causal_filter] --model_out model_stack.joblib
@@ -11,7 +11,8 @@
   * 후처리: raw, cummax, cummax2, cummax3 + --post_module의 POSTS
 보고
   * dev 점수  : 전체 OOF에서 고르고 같은 OOF로 잰 점수 (낙관적, 참고용)
-  * outer 점수: fold마다 다른 4개 fold로 고르고 남은 fold에 적용한 점수 (선택 편향 제거, 이 값으로 비교)
+  * outer 점수: fold마다 다른 4개 fold로 고르고 남은 fold에 적용한 점수
+                (메타 교차검증, base 학습 미분리: 독립 성능 추정이 아님. dev보다는 덜 낙관적이라 비교 기준으로 씀)
 """
 import argparse
 import importlib
@@ -63,7 +64,7 @@ def main():
     ap.add_argument("--w_lo", type=float, default=0.67)
     ap.add_argument("--w_hi", type=float, default=1.5)
     ap.add_argument("--w_min_gain", type=float, default=0.003)
-    ap.add_argument("--no_outer", action="store_true", help="바깥 fold 평가 생략 (빠름)")
+    ap.add_argument("--no_outer", action="store_true", help="메타 교차검증 생략 (빠름)")
     ap.add_argument("--no_bundle", action="store_true", help="표만 출력, model.joblib 만들지 않음")
     a = ap.parse_args()
 
@@ -146,12 +147,12 @@ def main():
 
     outer = None
     if not a.no_outer:
-        print("\n=== 바깥 fold 평가 (fold마다 나머지 fold로 선택 → 그 fold에 적용) ===")
+        print("\n=== 메타 교차검증, base 학습 미분리 (fold마다 나머지 fold로 메타 선택 → 그 fold에 적용) ===")
         outer, cfgs = outer_meta_eval(o, select, predict)
         for f, c in cfgs.items():
             print(f"  fold{f}: A {np.round(c['WA'], 2).tolist()} B {np.round(c['WB'], 2).tolist()} "
                   f"post {c['post']} w {'O' if c['use_w'] else 'X'}")
-        print(f"  outer 점수 {outer['weighted']:.4f}  (dev {dev['weighted']:.4f}, 차이 = 선택 편향 추정)")
+        print(f"  outer 점수 {outer['weighted']:.4f}  (dev {dev['weighted']:.4f}, 차이 = 메타 선택의 낙관 정도. base 학습은 미분리)")
         print(f"  fold(5s) {np.round(list(outer['fold_5s'].values()), 3).tolist()}  "
               f"클래스별(5s) {np.round(list(outer['class_5s'].values()), 3).tolist()}")
 

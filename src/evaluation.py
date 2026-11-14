@@ -3,8 +3,8 @@
 1) 고정 fold      : experiment_folds()  — 실험 단위 StratifiedKFold(tr_method×bat_class), seed 42, 5-fold
 2) 공통 점수      : score_fn()          — 5/10/15초 버전별 Macro F1을 9:1:1로 가중 (Test 간격 구성)
 3) OOF 형식       : make_oof() / write_oof() / read_oof() — 계약은 VALIDATION.md
-4) 공정한 메타 선택: outer_meta_eval()  — 블렌드 비율·w·후처리를 '다른 fold의 OOF'로 고르고
-                                         '남은 fold'에 적용해 점수를 낸다 (선택 편향 제거)
+4) 메타 교차검증 : outer_meta_eval()  — 블렌드 비율·w·후처리를 '다른 fold의 OOF'로 고르고
+                                         '남은 fold'에 적용해 점수를 낸다 (메타 교차검증, base 학습 미분리)
 """
 import json
 import os
@@ -51,11 +51,16 @@ def load_folds(path):
 # ---------------------------------------------------------------------------
 # 2. 공통 점수
 # ---------------------------------------------------------------------------
-def score_fn(o, pred, detail=False):
-    """o: OOF 프레임(ver 열 필요), pred: o 행 순서의 예측 라벨. 버전별 Macro F1을 VER_W(9:1:1)로 가중."""
+def score_fn(o, pred, detail=False, require_all=True):
+    """o: OOF 프레임(ver 열 필요), pred: o 행 순서의 예측 라벨. 버전별 Macro F1을 VER_W(9:1:1)로 가중.
+    기본은 3개 버전이 모두 있어야 한다 (빠진 버전을 조용히 재가중하지 않음)."""
     pred = np.asarray(pred)
+    if len(pred) != len(o):
+        raise ValueError("예측 길이가 OOF 행 수와 다릅니다")
     y = o["y"].to_numpy()
     ver = o["ver"].to_numpy()
+    if require_all and set(np.unique(ver)) != set(VER_W):
+        raise ValueError(f"score_fn: 버전 {list(VER_W)}가 모두 필요합니다 (현재 {sorted(set(np.unique(ver)))})")
     s = {}
     for v in VER_W:
         m = ver == v
@@ -107,13 +112,34 @@ def make_oof(P, F, ver, fold, extra_cols=()):
     return o
 
 
+def _audit_module():
+    """tools/audit_oof.py (독립 검사기)를 불러온다. 없으면 None."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "audit_oof.py")
+    if not os.path.exists(path):
+        return None
+    spec = importlib.util.spec_from_file_location("audit_oof", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def check_oof(o, name="oof"):
+    """OOF 계약 검사. 기본 검사 + tools/audit_oof.py의 독립 검사(fold 혼합, NaN/음수 확률, 버전 누락 등)."""
     miss = [c for c in OOF_COLS + PCOLS if c not in o.columns]
     assert not miss, f"{name}: OOF 열 없음 {miss}"
-    assert set(o.ver.unique()) <= set(VER_W), f"{name}: ver는 {list(VER_W)} 중 하나"
-    s = o[PCOLS].sum(1)
+    P = o[PCOLS].to_numpy(dtype=float)
+    assert np.isfinite(P).all() and (P >= 0).all() and (P <= 1).all(), f"{name}: 확률에 NaN/음수/1 초과 값"
+    s = P.sum(1)
     assert np.allclose(s, 1, atol=1e-3), f"{name}: 확률 합이 1이 아님 (min {s.min():.3f}, max {s.max():.3f})"
+    assert set(o.ver.unique()) == set(VER_W), f"{name}: 버전 {list(VER_W)}가 모두 필요 (현재 {sorted(o.ver.unique())})"
     assert not o.duplicated(["sample_id", "ver"]).any(), f"{name}: (sample_id, ver) 중복"
+    span = o.groupby("grp")["fold"].nunique()
+    assert (span == 1).all(), f"{name}: 원래 실험이 여러 fold에 걸침 {span[span > 1].index.tolist()[:5]}"
+    mod = _audit_module()
+    if mod is not None:
+        rep = mod.audit_oof(o[[c for c in o.columns if c in OOF_COLS + PCOLS]])
+        assert rep["ok"], f"{name}: audit_oof 실패 {rep['errors']}"
     return o
 
 
@@ -151,8 +177,8 @@ def outer_meta_eval(o, select, apply):
     """select(mask) -> cfg : o[mask] 행(다른 fold)만 보고 비율·w·후처리 등을 고른다.
     apply(cfg, mask) -> o[mask] 행의 예측 라벨.
     fold f마다 다른 fold로 고르고 fold f에 적용한 예측을 모아 score_fn으로 평가한다.
-    주의: 다른 fold의 OOF를 만든 base 모델은 fold f 실험으로도 학습됐으므로 완전한 nested CV는 아니다.
-    그래도 '같은 OOF에서 고르고 같은 OOF로 보고'하는 선택 편향은 제거된다."""
+    메타 교차검증, base 학습 미분리: 다른 fold의 OOF를 만든 base 모델은 fold f 실험으로도 학습됐다.
+    그래서 독립 성능 추정이나 선택 편향 제거를 보장하지 않는다. 메타 선택(비율·w·후처리)만 교차검증한 값이다."""
     pred = np.zeros(len(o), dtype=int)
     cfgs = {}
     fold = o["fold"].to_numpy()
