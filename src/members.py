@@ -42,7 +42,7 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         return fit_team(trn_raw, timg)
     if kind == "rn18":
         from . import rn18
-        return rn18.fit(trn_raw, timg, emb)
+        return rn18.fit(trn_raw, timg, emb, gpu=gpu)
     raise ValueError(kind)
 
 

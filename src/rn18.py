@@ -60,9 +60,12 @@ def build_X(frame, timg, emb):
     return pd.concat([base.reset_index(drop=True), pd.DataFrame(E.to_numpy(np.float32), columns=EMB_COLS)], axis=1)
 
 
-def fit(raw, timg, emb, thread_count=None):
+def fit(raw, timg, emb, thread_count=None, gpu=True):
+    """팀원 CatBoost v1 설정 그대로, gpu=True면 CatBoost를 GPU로 학습한다 (545개 특징이라 CPU는 느림)."""
     X = build_X(raw, timg, emb)
     pipe = TM.build_model(thread_count=thread_count or os.cpu_count() or 4)
+    if gpu and "classifier" in pipe.named_steps and type(pipe.named_steps["classifier"]).__name__ == "CatBoostClassifier":
+        pipe.set_params(classifier__task_type="GPU", classifier__devices="0")
     pipe.fit(X, raw["label"].astype(int).to_numpy())
     return {"features": list(X.columns), "pipeline": pipe}
 
