@@ -36,3 +36,6 @@ cache/
 !model.joblib
 model_oof.csv
 submission*.csv
+
+# 실행 산출물 (OOF, 합성 데이터, 임시 bundle)
+runs/
