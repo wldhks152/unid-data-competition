@@ -40,7 +40,7 @@
 ## 최종 모델 구성
 | 멤버 | 가중치 | 입력 | 모델 |
 |---|---|---|---|
-| `lgb` | 0.4 | 센서·이미지 통계 기반 과거 방향 시계열 피처 306개 (아래 "시계열 피처 구성") | LightGBM, 5/10/15초 솎아낸 행으로 증강 학습 |
+| `lgb` | 0.4 | 센서 기반 과거 방향 시계열·사건 피처 306개 (이미지는 `dino` 멤버가 담당) (아래 "시계열 피처 구성") | LightGBM, 5/10/15초 솎아낸 행으로 증강 학습 |
 | `dino` | 0.4 | 팀원 CatBoost v1 피처 33개 + 현재 행 센서 13개 + 열화상 DINOv2-small 임베딩 384차원 | CatBoost (GPU) |
 | `seq_gru` | 0.2 | 실험별 센서 시퀀스 (현재값·첫 관측 대비 변화·직전 대비 변화율, Δt, 경과시간, 실험 조건) | 단방향 2층 GRU (hidden 128), 처음부터 학습. 각 시점 출력은 그 시점까지의 행만 봄 |
 
@@ -94,13 +94,13 @@ python test.py --input <battery_data_light 경로>/test/test.csv \
 - 가장 많이 틀리는 곳은 **2↔3단계 경계**예요. Train OOF에서 정답 2를 3으로 733행, 정답 3을 2로 845행 예측했어요. 그다음은 4↔5와 5↔6 경계예요. 1단계는 거의 완벽해요.
 - 혼동행렬 전체는 `reports/metrics.json`에 있어요 (`tools/report_metrics.py`로 재생성).
 
-- 시도했지만 채택하지 않은 것: 단계군별 가중치, seed 평균(LightGBM·CatBoost·GRU 3-seed), 2↔3단계 전용 보정 모델, TCN 시퀀스 모델, ResNet50 이미지 특징, XGBoost·우리 피처 CatBoost 추가, 로지스틱 회귀 메타 스태킹(최저 0.843), 순서형(누적) LightGBM·XGBoost·GRU, 추가 인과 피처 55개(이미지 동역학·변동성·전압-온도 결합; 검증 최저 0.9059였지만 Public 0.8587로 하락), ExtraTrees, MiniRocket(GPU 합성곱의 길이별 수치 차이로 뒷부분 삭제 검사 실패), TabNet, Train+Validation 학습. 모두 두 검증 점수의 최저점을 올리지 못했어요.
+- 시도했지만 채택하지 않은 것: 단계군별 가중치, seed 평균(LightGBM·CatBoost·GRU 3-seed), 2↔3단계 전용 보정 모델, TCN 시퀀스 모델, ResNet50 이미지 특징, XGBoost·우리 피처 CatBoost 추가, 로지스틱 회귀 메타 스태킹(최저 0.843), 순서형(누적) LightGBM·XGBoost·GRU, 추가 인과 피처 12개(최근 30/60초 변동성·전압-온도 결합; 검증 최저 0.9059였지만 Public 0.8587로 하락), ExtraTrees, MiniRocket(GPU 합성곱의 길이별 수치 차이로 뒷부분 삭제 검사 실패), TabNet, Train+Validation 학습. 모두 두 검증 점수의 최저점을 올리지 못했어요.
 - 견고성 검증: `python tools/robustness.py --stack_dir runs/stack_trv --data_dir <경로>` (실험 8·11개 무작위 추출 5,000회 점수 분포, fold별 편차, 조건별 점수)
 - 단계별 F1과 혼동행렬: `python tools/report_metrics.py --members lgb dino seq_gru --weights 0.4 0.4 0.2` (`reports/metrics.json`, 집계값만 저장)
 
 ## 시계열 피처 구성
 같은 `experiment_id` 안에서 `relative_time_s` 순으로 정렬한 뒤, **현재 행과 그 이전 행만** 사용해요.
-- 이미지 통계 11종(팔레트 상대온도의 평균·분위수·최댓값, 청록/초록/노랑/빨강/흰색 이상 면적 비율): 현재값과 첫 프레임 대비 변화만 사용해요.
+- (선택, 최종 lgb에서는 끔) 이미지 팔레트 통계 11종(상대온도의 평균·분위수·최댓값, 청록/초록/노랑/빨강/흰색 이상 면적 비율). Validation에서 이득이 없어 최종 lgb에는 넣지 않았고, 이미지 정보는 DINOv2 멤버가 담당해요.
 - 센서 17종(전압, 온도, 압력, 가스 10종, 주위·열화상·가열 온도) 각각에 대해:
   - 현재값, 첫 관측 대비 변화량
   - 지금까지의 누적 최댓값·최솟값, 최댓값 대비 하락폭, 최솟값 대비 상승폭
