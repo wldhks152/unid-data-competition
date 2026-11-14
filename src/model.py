@@ -97,6 +97,18 @@ def predict_labels(bundle, F, post=None, P=None):
         P = np.mean([m.predict_proba(F[bundle["feats"]]) for m in bundle["models"]], axis=0)
     classes = bundle["classes"]
     w = np.asarray(bundle["w"])
+    if post["method"] == "hsmm":  # 인과 HSMM forward 필터 (tune_filter.py --save로 생성)
+        from .postprocess import decode, hsmm_filter
+        hs = post["hsmm"]
+        Fr = F.reset_index(drop=True)
+        P = hsmm_filter(Fr, P, hs)
+        w = np.asarray(post.get("hsmm_w", np.ones(len(classes)))) if post["use_w"] else np.ones(len(classes))
+        how = hs.get("decode", "cummax")
+        pred = classes[decode(P, Fr, "median" if how == "median" else "argmax", w, hs.get("thr", 0.5))]
+        pred = rule_gate(F, pred, post.get("gate"))
+        if how in ("cummax", "median"):
+            pred = cummax_pp(F, pred)
+        return pred.astype(int), P
     if post["method"] == "hmm":
         from .postprocess import hmm_filter
         P = hmm_filter(F.reset_index(drop=True), P, post["hmm"])
