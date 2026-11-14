@@ -28,6 +28,7 @@ def main():
     ap.add_argument("--meta", nargs="*", default=[], help="name,name ... (로지스틱 회귀 메타 스태킹)")
     ap.add_argument("--C", type=float, nargs="+", default=[0.1, 1.0])
     ap.add_argument("--holdout_fold", type=int, default=5)
+    ap.add_argument("--max_rows", type=int, default=40000, help="메타 모델 학습 행 상한 (무작위 추출, 속도용)")
     a = ap.parse_args()
 
     rows = [dict((kv.split("=")[0], float(kv.split("=")[1])) for kv in r.split(",")) for r in a.rows]
@@ -56,13 +57,21 @@ def main():
     for m in metas:
         X = np.concatenate([np.log(np.clip(Ps[idx[n]], 1e-6, 1)) for n in m], axis=1)
         y = o.y.to_numpy()
+        rng = np.random.default_rng(0)
+
+        def fit(mask, C):
+            ix = np.flatnonzero(mask)
+            if len(ix) > a.max_rows:
+                ix = rng.choice(ix, a.max_rows, replace=False)
+            return LogisticRegression(C=C, max_iter=300, class_weight="balanced").fit(X[ix], y[ix])
+
         for C in a.C:
             lab = np.empty(len(o), dtype=CLASSES.dtype)
             for f in sorted(set(fold[tr])):
                 fit_m, pred_m = tr & (fold != f), fold == f
-                clf = LogisticRegression(C=C, max_iter=2000, class_weight="balanced").fit(X[fit_m], y[fit_m])
-                lab[pred_m] = clf.predict(X[pred_m])
-            clf = LogisticRegression(C=C, max_iter=2000, class_weight="balanced").fit(X[tr], y[tr])
+                lab[pred_m] = fit(fit_m, C).predict(X[pred_m])
+                print(f"    메타 C={C:g} fold{f} 완료", flush=True)
+            clf = fit(tr, C)
             lab[va] = clf.predict(X[va])
             s1, s2 = score(lab)
             print(f"{'메타 LR(C=' + f'{C:g}) ' + '+'.join(m):<44s} {s1:.4f}      {s2:.4f}      {min(s1, s2):.4f}", flush=True)
