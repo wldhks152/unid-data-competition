@@ -12,9 +12,12 @@ CV 수치는 `<모델이름>_cv.json`의 `oof_macro_f1`에서 옮겨 적습니�
 | 11/14 | lgb_ev2 | 전환 규칙 임계값(45°C, 2.45V, 0.78/1.0V, 146.5°C) 반영 | (서버 확인) | 0.897 (+w) | - | |
 | 11/14 | 팀원 CatBoost v1 | 베이스라인 피처 33개, raw | 0.873 (Train GroupKFold) | 0.750 | 0.8828 | +w+cummax 붙이면 Val 0.879 |
 | 11/14 | **앙상블 α=0.5** | lgb_ev2 0.5 + CatBoost 0.5, +w+cummax | - | **0.903** | 0.8144 | Validation 최고인데 Public 하락 → diag_test.py로 진단 중 |
+| 11/14 | stack + seq2 0.2 | 인과 GRU(위험률 누적 출력, 시드 3) 멤버를 기존 스택 가중치×0.8 + 0.2로 고정 혼합 (`train_seq.py`, `src/seq_gru.py`) | 0.9037 (기존 0.9003, fold 4/5 상승, 2단계 F1 0.799→0.815) | - | - | check_submission 7개 통과. 기존 스택 대비 Test 예측 17행(0.5%) 변경. blend.py 전체 재탐색은 outer 0.864 < 0.881이라 고정 비율 사용 |
 
 ## 확인된 사실
 - label은 모든 실험에서 단조 증가 → cummax 후처리 유효
 - 단계 전환 규칙: 1→2 = t1 ≥ 45°C (100%), 3→4 = V ≤ 2.45 또는 최고전압 대비 0.78~1.0V 하락 (92~97%), 4→5(과충전) = t1 ≥ 146.5°C (92%)
 - 2→3 경계는 단일·조합 센서 규칙으로 설명되지 않음 (최고 33%)
 - Public LB는 Test 11개 실험 중 일부로 계산 → 실험 11개 무작위 추출 시 점수가 0.80~0.94로 흔들림. Validation holdout을 더 신뢰
+- seq v1(softmax GRU)은 2·3단계에서 6단계로 튀는 예측이 cummax에 고정돼 단독 cummax 0.776 → v2에서 P(단계≥k)를 시간 누적 위험률로 만들어 해결 (0.844)
+- `blend.py`는 `--no_bundle`이어도 `<model_out>_blend.json`을 덮어씀 → 비교 실행 때는 `--model_out`을 다른 경로로 지정
