@@ -59,7 +59,7 @@ class Scorer:
         return s
 
 
-def tune_w(fn, K, rounds=2, lo=0.4, hi=3.0):
+def tune_w(fn, K, rounds=2, lo=0.67, hi=1.5):  # VALIDATION.md 공통 범위
     """fn(w) → 가중 점수. tune_class_weights와 같은 좌표 탐색 (첫 클래스 1 고정)."""
     grid = np.exp(np.linspace(np.log(lo), np.log(hi), 21))
     w = np.ones(K)
