@@ -30,7 +30,8 @@ def make_cat(seed, iterations=1500, depth=7, lr=0.05, gpu=False):
         allow_writing_files=False, verbose=False, **kw)
 
 
-def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=False, cat_iters=1500, emb=None):
+def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=False, cat_iters=1500, emb=None,
+               seed_variant=False):
     if kind == "lgb":
         m = make_model(seed)
         m.fit(trn_F[feats], trn_F["label"])
@@ -43,7 +44,7 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         return fit_team(trn_raw, timg)
     if kind in ("rn18", "rn18s"):
         from . import rn18
-        return rn18.fit(trn_raw, timg, emb, gpu=gpu, sensors=kind == "rn18s")
+        return rn18.fit(trn_raw, timg, emb, gpu=gpu, sensors=kind == "rn18s", seed=seed if seed_variant else None)
     raise ValueError(kind)
 
 

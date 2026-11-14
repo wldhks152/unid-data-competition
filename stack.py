@@ -93,7 +93,8 @@ def main():
         for fold, (tr_g, va_g) in enumerate(splits):
             t0 = time.time()
             m = fit_member(kind, a.seed + fold + seed_off, trn_F=F[F.grp.isin(tr_g)], feats=feats,
-                           trn_raw=tv[tv[KEY].isin(tr_g)], timg=timg, gpu=not a.cpu, cat_iters=a.cat_iters, emb=emb)
+                           trn_raw=tv[tv[KEY].isin(tr_g)], timg=timg, gpu=not a.cpu, cat_iters=a.cat_iters, emb=emb,
+                           seed_variant=seed_off > 0)
             models.append(m)
             msg = []
             for k, o in EVAL_VERSIONS:
@@ -108,7 +109,7 @@ def main():
         if a.holdout_valid:  # Train 전체로 학습 → Validation을 fold len(splits)로
             t0 = time.time()
             m = fit_member(kind, a.seed + 99 + seed_off, trn_F=F, feats=feats, trn_raw=tv, timg=timg,
-                           gpu=not a.cpu, cat_iters=a.cat_iters, emb=emb)
+                           gpu=not a.cpu, cat_iters=a.cat_iters, emb=emb, seed_variant=seed_off > 0)
             models.append(m)
             msg = []
             for k, o in EVAL_VERSIONS:
