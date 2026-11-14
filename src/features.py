@@ -102,7 +102,8 @@ def _event_feats(t, g):
 def make_features(df):
     """(실험, 시간) 순으로 정렬된 피처 DataFrame을 반환. sample_id로 원래 행과 매칭."""
     df = df.sort_values([KEY, T], kind="stable").reset_index(drop=True)
-    sens = [c for c in SENSORS + IMG_COLS if c in df.columns]  # 이미지 통계도 같은 시계열 피처 적용
+    sens = [c for c in SENSORS if c in df.columns]
+    imgs = [c for c in IMG_COLS if c in df.columns]  # 이미지는 가볍게: 현재값 + 첫 프레임 대비 변화만
     peak = [c for c in PEAK_COLS if c in df.columns]
     blocks = []
     for _, g in df.groupby(KEY, sort=False):
@@ -118,6 +119,11 @@ def make_features(df):
         cols["t1_minus_t2"] = g["meas_t1"].to_numpy(float) - g["meas_t2"].to_numpy(float)
         cols["t1_minus_amb"] = g["meas_t1"].to_numpy(float) - g["atmp_t"].to_numpy(float)
         cols.update(_event_feats(t, g))
+        if imgs:
+            I = g[imgs].to_numpy(float)
+            for a, c in enumerate(imgs):
+                cols[c] = I[:, a]
+                cols[f"{c}__d0"] = I[:, a] - I[0, a]
         blocks.append(pd.DataFrame(cols, index=g.index))
     F = pd.concat(blocks).loc[df.index]
     meta = [c for c in META if c in df.columns] + [T] + COND
