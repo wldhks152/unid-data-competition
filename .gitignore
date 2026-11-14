@@ -39,3 +39,4 @@ cache/
 !model.joblib
 model_oof.csv
 submission*.csv
+weights/dinov2-small/.cache/
