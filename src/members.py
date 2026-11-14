@@ -11,6 +11,7 @@ kind
   ordx : ord와 같되 이진 분류기를 XGBoost(GPU, CUDA)로
   tabnet: pytorch-tabnet (GPU), 우리 피처 306개 (표준화 + 결측 표시)
   et   : ExtraTrees (sklearn, CPU), 우리 피처 (lgb와 같은 306개)
+  xgbl : lgb 설정을 흉내 낸 XGBoost CUDA (xgblf: + 짧은 창 피처)
   xgb  : XGBoost (GPU), 우리 피처, 5/10/15초 증강 행, 클래스 균형 가중
   team : 팀원 CatBoost v1 (원본 5초 행 + 팀원 피처 33개)
   rn18s: rn18 + 현재 행 센서 13개 (팀원 v2)
@@ -163,6 +164,17 @@ class TabNetMember:
         return out
 
 
+def make_xgb_lgbstyle(seed, gpu=True):
+    """lgb 멤버와 같은 설정을 XGBoost CUDA로 흉내: 잎 기준 성장(lossguide) 31잎, 700그루, lr 0.03, 행 0.8·열 0.6 추출.
+    LightGBM GPU(OpenCL)가 멈출 때 GPU로 lgb 계열을 학습하기 위한 대체."""
+    from xgboost import XGBClassifier
+    return XGBClassifier(
+        n_estimators=700, learning_rate=0.03, grow_policy="lossguide", max_leaves=31, max_depth=0,
+        min_child_weight=1.0, subsample=0.8, colsample_bytree=0.6, reg_lambda=1.0, max_bin=255,
+        tree_method="hist", device="cuda" if gpu else "cpu", objective="multi:softprob", eval_metric="mlogloss",
+        random_state=seed, n_jobs=os.cpu_count() or 4)
+
+
 def make_xgb(seed, gpu=True):
     """XGBoost (GPU: device=cuda, tree_method=hist). 클래스 균형은 sample_weight로."""
     from xgboost import XGBClassifier
@@ -188,10 +200,10 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         return ExtraTreesMember(seed).fit(trn_F[feats], trn_F["label"])
     if kind in ("ord", "ordx"):  # ordx: 같은 순서형을 XGBoost(CUDA)로
         return OrdinalLGB(seed, backend="xgb" if kind == "ordx" else "lgb", gpu=gpu).fit(trn_F[feats], trn_F["label"])
-    if kind in ("xgb", "xgbf"):  # 라벨 1..6 → 0..5 (xgbf: + 짧은 창 피처 f_)
+    if kind in ("xgb", "xgbf", "xgbl", "xgblf"):  # 라벨 1..6 → 0..5 (…f: + 짧은 창 피처 f_, xgbl: lgb 설정 흉내)
         from sklearn.utils.class_weight import compute_sample_weight
         y = trn_F["label"].to_numpy().astype(int) - 1
-        m = make_xgb(seed, gpu=gpu)
+        m = (make_xgb_lgbstyle if kind.startswith("xgbl") else make_xgb)(seed, gpu=gpu)
         m.fit(trn_F[feats].to_numpy(np.float32), y, sample_weight=compute_sample_weight("balanced", y))
         return m
     if kind == "team":
@@ -220,7 +232,7 @@ def predict_member(kind, model, F=None, feats=None, raw=None, timg=None, emb=Non
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_)
     if kind in ("ord", "ordx", "et", "tabnet"):
         return model.predict_proba(F[feats])
-    if kind in ("xgb", "xgbf"):
+    if kind in ("xgb", "xgbf", "xgbl", "xgblf"):
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_ + 1)
     if kind == "team":
         return team_proba(model, raw, timg, F.sample_id.values, list(CLASSES))

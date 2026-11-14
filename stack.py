@@ -99,7 +99,7 @@ def main():
 
     for name in a.members:
         kind = name.split("_")[0]
-        feats_k = {"lgbx": feats_x, "lgbf": feats_f, "xgbf": feats_f}.get(kind, feats)
+        feats_k = {"lgbx": feats_x, "lgbf": feats_f, "xgbf": feats_f, "xgblf": feats_f}.get(kind, feats)
         seed_off = int(name.split("_s")[1]) * 100 if "_s" in name else 0
         path = os.path.join(a.out_dir, f"{name}.joblib")
         if os.path.exists(path) and not a.force:
