@@ -55,11 +55,31 @@ def main():
     ap.add_argument("--output", default="submission.csv")
     ap.add_argument("--sample_submission", default=None)
     ap.add_argument("--skip_check", action="store_true", help="누수 자가검사 생략")
+    # 진단용 덮어쓰기 (재학습 없이 같은 model.joblib로 변형 제출 파일을 만든다)
+    ap.add_argument("--alpha", type=float, default=None, help="앙상블 LightGBM 비율 덮어쓰기 (1=LightGBM만, 0=CatBoost만)")
+    ap.add_argument("--post", choices=["none", "cummax"], default=None, help="후처리 덮어쓰기")
+    ap.add_argument("--use_w", type=int, choices=[0, 1], default=None, help="클래스 배율 w 사용 여부 덮어쓰기")
+    ap.add_argument("--gate", choices=["none", "12", "1234"], default=None, help="단계 전환 규칙 게이트 (src/model.py rule_gate)")
     a = ap.parse_args()
 
     bundle = joblib.load(a.model)
+    bundle["post"] = dict(bundle["post"])
+    if a.post is not None:
+        bundle["post"]["method"] = a.post
+    if a.use_w is not None:
+        bundle["post"]["use_w"] = bool(a.use_w)
+    if a.gate is not None:
+        bundle["post"]["gate"] = a.gate
+    if a.alpha is not None:
+        if a.alpha >= 1 and "team" in bundle:
+            bundle.pop("team")
+        elif "team" in bundle:
+            bundle["alpha"] = a.alpha
+        elif a.alpha < 1:
+            sys.exit("[오류] 이 model.joblib에는 CatBoost가 없어 --alpha < 1을 쓸 수 없습니다.")
     ens = f"앙상블(LightGBM {bundle['alpha']:.2f} + CatBoost {1 - bundle['alpha']:.2f})" if "team" in bundle else "LightGBM 단독"
     print(f"  모델: {a.model}  {ens}, 후처리={bundle['post']['method']}, w={bundle['post']['use_w']}, "
+          f"gate={bundle['post'].get('gate', 'none')}, "
           f"이미지={bundle.get('use_images', False)}")
     df = pd.read_csv(a.input)
     print(f"  입력: {a.input}  {len(df):,} rows, {df[KEY].nunique()} experiments")

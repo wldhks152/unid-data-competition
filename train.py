@@ -21,7 +21,16 @@ from src.ensemble import blend_proba, fit_team, team_image_features
 from src.data import COND, EVAL_VERSIONS, KEY, T, TRAIN_VERSIONS, VER_W, Y, find_csv, load, subsample
 from src.features import causality_check, feature_columns, make_features
 from src.images import add_image_features
-from src.model import cummax_pp, make_model, predict_labels, tune_class_weights
+from src.model import cummax_pp, make_model, predict_labels, rule_gate, tune_class_weights
+
+GATE_COLS = ["ev_t1_above45", "ev_v_below2.45", "ev_v_drop0.78", "ev_v_drop1.0", "tr_method"]
+GATES = ["none", "12", "1234"]
+
+
+def pp_name(meth, uw, gate="none"):
+    n = ("+w" if uw else "") + ("+" + meth if meth != "none" else "")
+    n = n[1:] if n.startswith("+cummax") else (n or "raw")
+    return n + ("" if gate == "none" else f"+gate{gate}")
 
 
 def weighted(scores):
@@ -98,6 +107,8 @@ def main():
             dd = pd.DataFrame(P, columns=[f"p{c}" for c in m.classes_], index=v.index)
             dd["sample_id"], dd["y"], dd[KEY], dd[T] = v.sample_id.values, v[Y].values, v[KEY].values, v[T].values
             dd["ver"], dd["fold"] = f"k{k}o{o}", fold
+            for c in GATE_COLS:
+                dd[c] = v[c].values
             oof.append(dd)
             msg.append(f"{5 * k}s F1={f1_score(v[Y], m.classes_[P.argmax(1)], average='macro'):.3f}")
         print(f"  fold{fold}  " + "  ".join(msg) + f"  ({time.time() - t0:.0f}s)")
@@ -111,25 +122,26 @@ def main():
 
     print("\n[5] 후처리 선택 (OOF Macro-F1, 가중 = Test 간격 구성 9:1:1)")
     p_raw, p_w = classes[P.argmax(1)], classes[(P * w).argmax(1)]
-    cands = {
-        ("none", False): p_raw, ("none", True): p_w,
-        ("cummax", False): cummax_pp(oof, p_raw), ("cummax", True): cummax_pp(oof, p_w),
-    }
+    cands = {}
+    for uw, p0 in [(False, p_raw), (True, p_w)]:
+        for gate in GATES:
+            pg = rule_gate(oof, p0, gate)
+            cands[("none", uw, gate)] = pg
+            cands[("cummax", uw, gate)] = cummax_pp(oof, pg)
     table = {}
-    print(f"  {'방식':<14s} {'5s':>7s} {'10s':>7s} {'15s':>7s} {'가중':>7s}")
-    for (meth, uw), pred in cands.items():
+    print(f"  {'방식':<22s} {'5s':>7s} {'10s':>7s} {'15s':>7s} {'가중':>7s}")
+    for (meth, uw, gate), pred in cands.items():
         s = {v: f1_score(oof.y[oof.ver == v], pred[(oof.ver == v).to_numpy()], average="macro") for v in VER_W}
         s["weighted"] = weighted(s)
-        name = ("+w+" if uw else "") + meth if meth != "none" else ("+w" if uw else "raw")
+        name = pp_name(meth, uw, gate)
         table[name] = {k: round(x, 4) for k, x in s.items()}
-        print(f"  {name:<14s} {s['k1o0']:7.4f} {s['k2o0']:7.4f} {s['k3o0']:7.4f} {s['weighted']:7.4f}")
-    (meth, uw) = max(cands, key=lambda c: table[
-        (("+w+" if c[1] else "") + c[0]) if c[0] != "none" else ("+w" if c[1] else "raw")]["weighted"])
-    post = {"method": meth, "use_w": bool(uw), "hmm": None}
-    print(f"  → 선택: method={meth}, use_w={uw}  (HMM 비교는 tune_pp.py)")
+        print(f"  {name:<22s} {s['k1o0']:7.4f} {s['k2o0']:7.4f} {s['k3o0']:7.4f} {s['weighted']:7.4f}")
+    (meth, uw, gate) = max(cands, key=lambda c: table[pp_name(*c)]["weighted"])
+    post = {"method": meth, "use_w": bool(uw), "hmm": None, "gate": gate}
+    print(f"  → 선택: method={meth}, use_w={uw}, gate={gate}  (HMM 비교는 tune_pp.py)")
 
     dd = oof[oof.ver == "k1o0"]
-    best_pred = cands[(meth, uw)][(oof.ver == "k1o0").to_numpy()]
+    best_pred = cands[(meth, uw, gate)][(oof.ver == "k1o0").to_numpy()]
     per_class = f1_score(dd.y, best_pred, average=None, labels=classes)
     print("\n  클래스별 F1 (5초, 선택된 방식):", dict(zip(classes.tolist(), np.round(per_class, 3).tolist())))
     print(f"  Acc (5초): {accuracy_score(dd.y, best_pred):.4f}")
@@ -149,7 +161,7 @@ def main():
         bundle["team"] = fit_team(tv, timg)
         bundle["alpha"] = a.alpha
         # 앙상블 후처리는 Validation 비교(ensemble_eval.py)에서 가장 좋았던 +w+cummax로 고정
-        bundle["post"] = post = {"method": "cummax", "use_w": True, "hmm": None}
+        bundle["post"] = post = {"method": "cummax", "use_w": True, "hmm": None, "gate": "none"}
         print(f"  완료 ({time.time() - t0:.0f}s) · 앙상블 후처리 = +w+cummax (Validation 비교 결과로 고정)")
 
     holdout = None
@@ -167,18 +179,18 @@ def main():
             if idx == 2 and "team" not in bundle:
                 continue
             print(f"  --- {title} ---")
-            print(f"  {'방식':<14s} {'5s':>7s} {'10s':>7s} {'15s':>7s} {'가중':>7s}")
-            for meth, uw in [("none", False), ("none", True), ("cummax", False), ("cummax", True)]:
-                name = ("+w+" if uw else "") + meth if meth != "none" else ("+w" if uw else "raw")
+            print(f"  {'방식':<22s} {'5s':>7s} {'10s':>7s} {'15s':>7s} {'가중':>7s}")
+            for meth, uw, gate in [(m_, u_, g_) for g_ in GATES for u_ in (False, True) for m_ in ("none", "cummax")]:
+                name = pp_name(meth, uw, gate)
                 s = {}
                 for v, tup in vers.items():
-                    pv, _ = predict_labels(bundle, tup[0], post={"method": meth, "use_w": uw, "hmm": None}, P=tup[idx])
+                    pv, _ = predict_labels(bundle, tup[0], post={"method": meth, "use_w": uw, "hmm": None, "gate": gate}, P=tup[idx])
                     s[v] = f1_score(tup[0][Y], pv, average="macro")
                 s["weighted"] = weighted(s)
                 holdout[f"{title}|{name}"] = {k: round(x, 4) for k, x in s.items()}
-                mark = "  ← 저장된 설정" if (meth, uw) == (post["method"], post["use_w"]) and (
+                mark = "  ← 저장된 설정" if (meth, uw, gate) == (post["method"], post["use_w"], post.get("gate", "none")) and (
                     idx == 2 or "team" not in bundle) else ""
-                print(f"  {name:<14s} {s['k1o0']:7.4f} {s['k2o0']:7.4f} {s['k3o0']:7.4f} {s['weighted']:7.4f}{mark}")
+                print(f"  {name:<22s} {s['k1o0']:7.4f} {s['k2o0']:7.4f} {s['k3o0']:7.4f} {s['weighted']:7.4f}{mark}")
         Fv, Po, Pe = vers["k1o0"]
         pv, _ = predict_labels(bundle, Fv, P=Pe if Pe is not None else Po)
         print("  클래스별 F1 (저장된 설정, 5초):",
