@@ -56,7 +56,11 @@ def main():
                     help="마지막 설정의 fold 모델을 blend.py용 custom 멤버(physics_lgb.joblib)로 저장")
     ap.add_argument("--save_oof", default="base,last", help="OOF 확률을 저장할 설정 (쉼표, base/last/all/설정이름)")
     ap.add_argument("--max_rows", type=int, default=0, help="(테스트용) 학습 행 수 상한")
+    ap.add_argument("--cpu", action="store_true", help="CPU로 학습 (기본: GPU, LightGBM은 설치 빌드가 지원할 때)")
     a = ap.parse_args()
+    if a.cpu:
+        from src.model import DEVICE
+        DEVICE["prefer"] = "cpu"
     os.makedirs(a.out, exist_ok=True)
     groups = parse_groups(a.groups)
 
