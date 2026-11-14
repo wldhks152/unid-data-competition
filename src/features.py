@@ -203,6 +203,70 @@ def _since_vent_feats(t, g):
     return out
 
 
+Z_SENS = ["meas_t1", "meas_t2", "meas_v", "meas_p", "thermal_t"]
+
+
+def _z_feats(t, g):
+    """복합 이탈 피처 (z_ 접두사, 과거만). 그룹마다 2→3 신호가 온도·전압·압력으로 달라서, 개별 신호 대신
+    "어느 신호든 벤팅 이후 자기 기준선에서 벗어났나"를 잡는다.
+    - 신호별 z: 벤팅(t1 ≥ 45°C 첫 도달) 이후 지금까지의 평균·표준편차(누적, 과거만) 기준 현재값 z와 30초 기울기 z
+    - 복합: 신호별 |z|의 최대·합, 최대 z가 2·3을 처음 넘은 뒤 경과시간, 최대 z 초과분의 누적 적분,
+            가장 먼저 2를 넘은 신호 번호(-1 = 아직 없음)"""
+    out = {}
+    n = len(t)
+    if "meas_t1" not in g.columns or n == 0:
+        return out
+    t1 = g["meas_t1"].to_numpy(float)
+    with np.errstate(invalid="ignore"):
+        hit = np.maximum.accumulate(np.nan_to_num(t1 >= 45, nan=0).astype(bool))
+    iv = int(np.argmax(hit)) if hit.any() else n
+    after = np.arange(n) >= iv
+    j30 = np.searchsorted(t, t - 30, side="left")
+    dt30 = t - t[j30]
+    Zl, Zr = [], []
+    for c in Z_SENS:
+        x = g[c].to_numpy(float) if c in g.columns else np.full(n, np.nan)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            r = np.where(dt30 > 0, (x - x[j30]) / np.where(dt30 > 0, dt30, 1), np.nan)
+        for arr, store in [(x, Zl), (r, Zr)]:
+            v = np.where(after & np.isfinite(arr), arr, 0.0)
+            k = np.cumsum(after & np.isfinite(arr))
+            s1, s2 = np.cumsum(v), np.cumsum(v * v)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                mu = s1 / k
+                sd = np.sqrt(np.clip(s2 / k - mu * mu, 0, None))
+                z = np.where(after & (k >= 3), (arr - mu) / (sd + 1e-3 * (np.abs(mu) + 1)), np.nan)
+            store.append(np.clip(z, -20, 20))
+    Zl, Zr = np.stack(Zl, 1), np.stack(Zr, 1)
+    for a, c in enumerate(Z_SENS):
+        out[f"z_{c}__lvl"] = Zl[:, a]
+        out[f"z_{c}__rate"] = Zr[:, a]
+    with np.errstate(invalid="ignore"):
+        A = np.abs(np.concatenate([Zl, Zr], 1))
+        zmax = np.where(after, np.nanmax(np.where(np.isfinite(A), A, -1), 1), np.nan)
+        zmax = np.where(zmax < 0, np.nan, zmax)
+        out["z_max"] = zmax
+        out["z_sum"] = np.where(after, np.nansum(A, 1), np.nan)
+        out["z_max_rate"] = np.where(after, np.nanmax(np.where(np.isfinite(np.abs(Zr)), np.abs(Zr), -1), 1), np.nan)
+        dt = np.diff(t, prepend=t[0])
+        out["z_excess_int"] = np.cumsum(np.nan_to_num(np.clip(zmax - 1, 0, None)) * dt)
+        for th in (2, 3):
+            occ = np.maximum.accumulate(np.nan_to_num(zmax > th, nan=0).astype(bool))
+            first = int(np.argmax(occ)) if occ.any() else n
+            out[f"z_t_since_max{th}"] = np.where(np.arange(n) >= first, t - t[min(first, n - 1)], np.nan)
+        firsts = []
+        for a in range(len(Z_SENS)):
+            col = np.nan_to_num(np.maximum(np.abs(Zl[:, a]), np.abs(Zr[:, a])) > 2, nan=0).astype(bool)
+            firsts.append(int(np.argmax(col)) if col.any() else n)
+        firsts = np.array(firsts)
+        lead = np.full(n, -1.0)
+        order = np.argsort(firsts, kind="stable")
+        if firsts[order[0]] < n:
+            lead[firsts[order[0]]:] = order[0]
+        out["z_first_signal"] = lead
+    return out
+
+
 def make_features(df):
     """(실험, 시간) 순으로 정렬된 피처 DataFrame을 반환. sample_id로 원래 행과 매칭."""
     df = df.sort_values([KEY, T], kind="stable").reset_index(drop=True)
@@ -226,6 +290,7 @@ def make_features(df):
         cols.update(_extra_feats(t, g))
         cols.update(_fast_feats(t, g))
         cols.update(_since_vent_feats(t, g))
+        cols.update(_z_feats(t, g))
         if imgs:
             I = g[imgs].to_numpy(float)
             for a, c in enumerate(imgs):

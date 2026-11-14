@@ -82,10 +82,11 @@ def main():
     t0 = time.time()
     F = pd.concat([make_features(subsample(tv, k, o)) for k, o in TRAIN_VERSIONS], ignore_index=True)
     feats_all = [c for c in feature_columns(F) if F[c].nunique(dropna=True) > 1]
-    feats = [c for c in feats_all if not c.startswith(("x_", "f_", "s_"))]  # 기존 멤버는 추가 피처 없이 (이전 결과와 같게)
+    feats = [c for c in feats_all if not c.startswith(("x_", "f_", "s_", "z_"))]  # 기존 멤버는 추가 피처 없이 (이전 결과와 같게)
     feats_x = feats + [c for c in feats_all if c.startswith("x_")]
     feats_f = feats + [c for c in feats_all if c.startswith("f_")]
     feats_s = feats + [c for c in feats_all if c.startswith("s_")]
+    feats_z = feats + [c for c in feats_all if c.startswith("z_")]
     print(f"  추가 피처 x_ {len(feats_x) - len(feats)}개 (lgbx), f_ {len(feats_f) - len(feats)}개 (lgbf)")
     raw_ver = {f"k{k}o{o}": subsample(tv, k, o) for k, o in EVAL_VERSIONS}
     print(f"  {len(F):,} rows × {len(feats)} features ({time.time() - t0:.0f}s)")
@@ -100,7 +101,7 @@ def main():
 
     for name in a.members:
         kind = name.split("_")[0]
-        feats_k = {"lgbx": feats_x, "lgbf": feats_f, "xgbf": feats_f, "xgblf": feats_f, "catf": feats_f, "xgbls": feats_s}.get(kind, feats)
+        feats_k = {"lgbx": feats_x, "lgbf": feats_f, "xgbf": feats_f, "xgblf": feats_f, "catf": feats_f, "xgbls": feats_s, "xgblz": feats_z, "catz": feats_z}.get(kind, feats)
         seed_off = int(name.split("_s")[1]) * 100 if "_s" in name else 0
         path = os.path.join(a.out_dir, f"{name}.joblib")
         if os.path.exists(path) and not a.force:

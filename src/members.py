@@ -190,7 +190,7 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         m = make_model(seed)
         m.fit(trn_F[feats], trn_F["label"])
         return m
-    if kind in ("cat", "catf"):  # catf: + 짧은 창 피처 f_
+    if kind in ("cat", "catf", "catz"):  # catf: + 짧은 창 피처 f_
         m = make_cat(seed, iterations=cat_iters, gpu=gpu)
         m.fit(trn_F[feats].to_numpy(np.float32), trn_F["label"].to_numpy())
         return m
@@ -200,7 +200,7 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         return ExtraTreesMember(seed).fit(trn_F[feats], trn_F["label"])
     if kind in ("ord", "ordx"):  # ordx: 같은 순서형을 XGBoost(CUDA)로
         return OrdinalLGB(seed, backend="xgb" if kind == "ordx" else "lgb", gpu=gpu).fit(trn_F[feats], trn_F["label"])
-    if kind in ("xgb", "xgbf", "xgbl", "xgblf", "xgbls"):  # 라벨 1..6 → 0..5 (…f: + 짧은 창 피처 f_, xgbl: lgb 설정 흉내)
+    if kind in ("xgb", "xgbf", "xgbl", "xgblf", "xgbls", "xgblz"):  # 라벨 1..6 → 0..5 (…f: + 짧은 창 피처 f_, xgbl: lgb 설정 흉내)
         from sklearn.utils.class_weight import compute_sample_weight
         y = trn_F["label"].to_numpy().astype(int) - 1
         m = (make_xgb_lgbstyle if kind.startswith("xgbl") else make_xgb)(seed, gpu=gpu)
@@ -228,11 +228,11 @@ def predict_member(kind, model, F=None, feats=None, raw=None, timg=None, emb=Non
     """F 행 순서대로 (n, 6) 확률. team은 raw(F와 같은 sample_id를 가진 원본 행)와 이미지 통계가 필요."""
     if kind in ("lgb", "lgbx", "lgbf"):
         return _reorder(model.predict_proba(F[feats]), model.classes_)
-    if kind in ("cat", "catf"):
+    if kind in ("cat", "catf", "catz"):
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_)
     if kind in ("ord", "ordx", "et", "tabnet"):
         return model.predict_proba(F[feats])
-    if kind in ("xgb", "xgbf", "xgbl", "xgblf", "xgbls"):
+    if kind in ("xgb", "xgbf", "xgbl", "xgblf", "xgbls", "xgblz"):
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_ + 1)
     if kind == "team":
         return team_proba(model, raw, timg, F.sample_id.values, list(CLASSES))
