@@ -44,7 +44,10 @@ def fit_net(cfg, train_seqs, device, seed, log=print):
     data = [(sc.transform(s["X"]), s["y"]) for s in train_seqs]
     c_in = data[0][0].shape[1]
     net = nets.build(cfg["model"], c_in, len(CLASSES), **cfg.get("net_kw", {})).to(device)
-    w = torch.as_tensor(class_weights(train_seqs, cfg.get("cw_power", 1.0)), dtype=torch.float32, device=device)
+    cw = class_weights(train_seqs, cfg.get("cw_power", 1.0))
+    cw[[1, 2]] *= cfg.get("cw23", 1.0)  # 2·3단계 가중 (기본 1 = 변화 없음)
+    w = torch.as_tensor(cw, dtype=torch.float32, device=device)
+    aux23 = cfg.get("aux23", 0.0)  # 2↔3 경계 보조 손실: 정답이 2·3인 행에서 logit3−logit2로 이진 분류
     opt = torch.optim.AdamW(net.parameters(), lr=cfg["lr"], weight_decay=cfg.get("wd", 1e-2))
     bs, ep = cfg["batch"], cfg["epochs"]
     steps = ep * math.ceil(len(data) / bs)
@@ -61,6 +64,11 @@ def fit_net(cfg, train_seqs, device, seed, log=print):
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
                 out = net(X)
             loss = F.cross_entropy(out.float().reshape(-1, len(CLASSES)), Y.reshape(-1), weight=w, ignore_index=-100)
+            if aux23:
+                m23 = (Y == 1) | (Y == 2)
+                if m23.any():
+                    z = (out[..., 2] - out[..., 1]).float()[m23]
+                    loss = loss + aux23 * F.binary_cross_entropy_with_logits(z, (Y[m23] == 2).float())
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)

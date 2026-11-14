@@ -84,6 +84,8 @@ def main():
     ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--lr", type=float, default=None)
     ap.add_argument("--batch", type=int, default=None)
+    ap.add_argument("--cw23", type=float, default=None, help="2·3단계 클래스 가중 배율 (GRU/TCN)")
+    ap.add_argument("--aux23", type=float, default=None, help="2↔3 경계 보조 손실 비중 (GRU/TCN)")
     ap.add_argument("--hidden", type=int, default=None, help="rocket: 0이면 선형, >0이면 은닉층 1개")
     ap.add_argument("--only_folds", type=int, nargs="*", default=None, help="일부 fold만 (빠른 확인용)")
     ap.add_argument("--device", default="auto")
@@ -99,7 +101,7 @@ def main():
     else:
         print("device: cpu")
     cfg = dict(DEFAULTS[a.model], model=a.model)
-    for k in ("epochs", "lr", "batch", "hidden"):
+    for k in ("epochs", "lr", "batch", "hidden", "cw23", "aux23"):
         if getattr(a, k) is not None:
             cfg[k] = getattr(a, k)
     name = a.name or f"seq_{a.model}"
