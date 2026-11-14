@@ -20,7 +20,7 @@ from sklearn.model_selection import StratifiedKFold
 from src.data import COND, EVAL_VERSIONS, KEY, T, TRAIN_VERSIONS, VER_W, Y, find_csv, load, subsample
 from src.features import causality_check, feature_columns, make_features
 from src.images import add_image_features
-from src.model import cummax_pp, make_model, tune_class_weights
+from src.model import cummax_pp, make_model, predict_labels, tune_class_weights
 
 
 def weighted(scores):
@@ -36,6 +36,8 @@ def main():
     ap.add_argument("--no_balance", action="store_true", help="class_weight=balanced 끄기")
     ap.add_argument("--no_images", action="store_true", help="이미지 통계 피처 끄기")
     ap.add_argument("--cache_dir", default="cache", help="이미지 통계 캐시 폴더")
+    ap.add_argument("--holdout_valid", action="store_true",
+                    help="비교용: Train만으로 학습하고 제공 Validation(19개 실험)으로 평가. 제출용 아님")
     a = ap.parse_args()
     random.seed(a.seed)
     np.random.seed(a.seed)
@@ -49,7 +51,11 @@ def main():
         for s in ("train", "valid"):
             root = os.path.dirname(find_csv(a.data_dir, s))
             d[s] = add_image_features(d[s], root, cache_dir=a.cache_dir, tag=s)
-    tv = pd.concat([d["train"], d["valid"]], ignore_index=True)
+    if a.holdout_valid:
+        print("  ※ holdout 모드: Train만 학습, Validation은 마지막 평가에만 사용")
+        tv = d["train"].copy()
+    else:
+        tv = pd.concat([d["train"], d["valid"]], ignore_index=True)
 
     print("\n[2] 피처 누수 검사")
     causality_check(tv)
@@ -127,13 +133,38 @@ def main():
 
     bundle = {"models": models, "feats": feats, "classes": classes, "w": w, "post": post,
               "use_images": not a.no_images}
+
+    holdout = None
+    if a.holdout_valid:
+        print("\n[6] Holdout 평가 — 제공 Validation (학습에 전혀 쓰지 않은 실험)")
+        va = d["valid"]
+        print(f"  {'방식':<14s} {'5s':>7s} {'10s':>7s} {'15s':>7s} {'가중':>7s}")
+        holdout = {}
+        for meth, uw in [("none", False), ("none", True), ("cummax", False), ("cummax", True)]:
+            name = ("+w+" if uw else "") + meth if meth != "none" else ("+w" if uw else "raw")
+            s = {}
+            for k, o in EVAL_VERSIONS:
+                Fv = make_features(subsample(va, k, o))
+                pv, _ = predict_labels(bundle, Fv, post={"method": meth, "use_w": uw, "hmm": None})
+                s[f"k{k}o{o}"] = f1_score(Fv[Y], pv, average="macro")
+            s["weighted"] = weighted(s)
+            holdout[name] = {k: round(x, 4) for k, x in s.items()}
+            mark = "  ← 선택된 방식" if (meth, uw) == (post["method"], post["use_w"]) else ""
+            print(f"  {name:<14s} {s['k1o0']:7.4f} {s['k2o0']:7.4f} {s['k3o0']:7.4f} {s['weighted']:7.4f}{mark}")
+        Fv = make_features(va)
+        pv, _ = predict_labels(bundle, Fv)
+        print("  클래스별 F1 (선택된 방식, 5초):",
+              dict(zip(classes.tolist(), np.round(f1_score(Fv[Y], pv, average=None, labels=classes), 3).tolist())))
+        print("  ※ 팀원 CatBoost v1의 Validation Macro F1 = 0.7505 와 비교하세요 (같은 조건: Train만 학습)")
+
     joblib.dump(bundle, a.model_out, compress=3)
     oof.to_csv(f"{stem}_oof.csv", index=False)
     with open(f"{stem}_cv.json", "w", encoding="utf-8") as f:
         json.dump({"args": vars(a), "model": type(models[0]).__name__, "n_features": len(feats),
                    "w": dict(zip(map(str, classes.tolist()), np.round(w, 3).tolist())),
                    "post": {k: v for k, v in post.items() if k != "hmm"}, "oof_macro_f1": table,
-                   "per_class_f1_5s": dict(zip(map(str, classes.tolist()), np.round(per_class, 4).tolist()))},
+                   "per_class_f1_5s": dict(zip(map(str, classes.tolist()), np.round(per_class, 4).tolist())),
+                   "holdout_valid": holdout},
                   f, ensure_ascii=False, indent=2)
     size = os.path.getsize(a.model_out) / 1e6
     print(f"\n저장 → {a.model_out} ({size:.1f}MB), {stem}_oof.csv, {stem}_cv.json")
