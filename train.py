@@ -15,13 +15,13 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score
-from sklearn.model_selection import StratifiedKFold
 
 from src.ensemble import blend_proba, fit_team, team_image_features, team_proba
-from src.data import COND, EVAL_VERSIONS, KEY, T, TRAIN_VERSIONS, VER_W, Y, find_csv, load, subsample
+from src.data import EVAL_VERSIONS, KEY, T, TRAIN_VERSIONS, VER_W, Y, find_csv, load, subsample
 from src.features import causality_check, feature_columns, make_features
 from src.images import add_image_features
-from src.model import cummax_pp, make_model, predict_labels, rule_gate, tune_class_weights
+from src.evaluation import experiment_folds, tune_w
+from src.model import cummax_pp, make_model, predict_labels, rule_gate
 
 GATE_COLS = ["ev_t1_above45", "ev_v_below2.45", "ev_v_drop0.78", "ev_v_drop1.0", "tr_method"]
 GATES = ["none", "12", "1234"]
@@ -92,16 +92,11 @@ def main():
     print(f"  {len(F):,} rows × {len(feats)} features ({time.time() - t0:.0f}s), 상수 피처 {len(const)}개 제외")
 
     print(f"\n[4] {a.folds}-fold CV (실험 단위 분할) — fold 모델들을 최종 앙상블로 사용")
-    ex = F[F.ver == "k1o0"].groupby("grp")[COND].first()
-    strata = ex.tr_method.astype(str) + "_" + ex.bat_class.astype(str)
-    if strata.value_counts().min() < a.folds:
-        strata = ex.tr_method.astype(str)
-    skf = StratifiedKFold(n_splits=a.folds, shuffle=True, random_state=a.seed)
+    splits = experiment_folds(tv, n_folds=a.folds, seed=a.seed)  # stack.py · blend.py와 같은 분할
     models, oof = [], []
     ens_oof = a.ens_oof and not a.no_catboost
     raw_ver = {f"k{k}o{o}": subsample(tv, k, o) for k, o in EVAL_VERSIONS} if ens_oof else None
-    for fold, (tr_i, va_i) in enumerate(skf.split(ex.index, strata)):
-        tr_g, va_g = set(ex.index[tr_i]), set(ex.index[va_i])
+    for fold, (tr_g, va_g) in enumerate(splits):
         trn = F[F.grp.isin(tr_g)]
         t0 = time.time()
         m = make_model(a.seed + fold, balanced=not a.no_balance)
@@ -130,7 +125,7 @@ def main():
     pcols = [f"p{c}" for c in classes]
     oof = pd.concat(oof).reset_index(drop=True)
     P = oof[pcols].to_numpy()
-    w, _ = tune_class_weights(P, oof.y.to_numpy(), classes, lo=a.w_lo, hi=a.w_hi)
+    w, _ = tune_w(P, oof, lo=a.w_lo, hi=a.w_hi)  # 공통 점수(9:1:1 가중)로 튜닝
     print("\n  클래스 배율 w (Macro-F1 튜닝):", dict(zip(classes.tolist(), np.round(w, 2).tolist())))
 
     print("\n[5] 후처리 선택 (OOF Macro-F1, 가중 = Test 간격 구성 9:1:1)")
@@ -177,7 +172,7 @@ def main():
         res = []
         for al in [0.0] + list(a.alphas) + [1.0]:
             Pb = al * P + (1 - al) * Q
-            wa, _ = tune_class_weights(Pb, y, classes, lo=a.w_lo, hi=a.w_hi)
+            wa, _ = tune_w(Pb, oof, lo=a.w_lo, hi=a.w_hi)
             for uw, ww in [(False, np.ones(len(classes))), (True, wa)]:
                 pred = cummax_pp(oof, classes[(Pb * ww).argmax(1)])
                 sc = {v: f1_score(y[(oof.ver == v).to_numpy()], pred[(oof.ver == v).to_numpy()], average="macro")
@@ -187,17 +182,19 @@ def main():
                 name = f"a={al:.2f} " + ("+w+cummax" if uw else "cummax")
                 print(f"  {name:<22s} {sc['k1o0']:7.4f} {sc['k2o0']:7.4f} {sc['k3o0']:7.4f} {sc['weighted']:7.4f}"
                       + (f"  {np.round(ww, 2).tolist()}" if uw else ""))
-        best = max([r for r in res if 0 < r[1] < 1] or res, key=lambda r: r[0])
+        best = max(res, key=lambda r: r[0])  # 단독 모델(α=0/1)도 후보에 포함
         ens_choice = {"alpha": best[1], "use_w": best[2], "w": best[3], "score": best[0]}
-        print(f"  → 선택 (0<α<1 중): α={best[1]:.2f}, use_w={best[2]}, 가중 {best[0]:.4f}")
+        print(f"  → 선택 (dev, 같은 OOF로 고른 값이라 낙관적 · 공정한 비교는 blend.py outer 점수): α={best[1]:.2f}, use_w={best[2]}, 가중 {best[0]:.4f}")
 
     if not a.no_catboost:
         print(f"\n[5b] 팀원 CatBoost v1 학습 (같은 데이터 {tv[KEY].nunique()}개 실험, 5초 원본 행) → 앙상블 α={a.alpha}")
         t0 = time.time()
         bundle["team"] = fit_team(tv, timg)
         bundle["alpha"] = a.alpha
-        # 앙상블 후처리는 Validation 비교(ensemble_eval.py)에서 가장 좋았던 +w+cummax로 고정
-        bundle["post"] = post = {"method": "cummax", "use_w": True, "hmm": None, "gate": "none"}
+        # 앙상블 OOF가 없으면 LightGBM OOF로 튜닝한 w를 섞인 확률에 쓰지 않는다 (확률 분포가 다름) → w 없이 cummax
+        bundle["post"] = post = {"method": "cummax", "use_w": False, "hmm": None, "gate": "none"}
+        if ens_choice is None:
+            print("  [안내] --ens_oof 없이 앙상블: w는 쓰지 않음 (LightGBM 단독 OOF로 튜닝된 값이라서). α는 --alpha 그대로")
         if ens_choice is not None:  # 앙상블 OOF 튜닝 결과로 덮어씀
             a.alpha = bundle["alpha"] = ens_choice["alpha"]
             bundle["w"] = ens_choice["w"]
