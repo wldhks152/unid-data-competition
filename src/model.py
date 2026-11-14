@@ -67,6 +67,27 @@ def rule_gate(F, pred, mode):
     return pred
 
 
+def stable_cummax_pp(F, pred, k=2):
+    """완만한 단조 후처리: 최근 k개 예측이 모두 현재 단계보다 높을 때만 단계를 올린다.
+    올릴 때는 최근 k개 중 최솟값으로 올린다. 과거 예측만 쓰므로 규칙 위반 아님. k=1이면 cummax와 같다."""
+    s = pd.Series(np.asarray(pred), index=F.index)
+    order = F.sort_values([KEY, T]).index
+    out = pd.Series(0, index=order)
+    for _, idx in s.loc[order].groupby(F.loc[order, KEY].values, sort=False).groups.items():
+        p = s.loc[idx].to_numpy()
+        cur, res = None, np.empty(len(p), dtype=int)
+        for i, x in enumerate(p):
+            if cur is None:
+                cur = x
+            else:
+                win = p[max(0, i - k + 1):i + 1]
+                if len(win) == k and win.min() > cur:
+                    cur = win.min()
+            res[i] = cur
+        out.loc[idx] = res
+    return out.loc[F.index].to_numpy()
+
+
 def predict_labels(bundle, F, post=None, P=None):
     """저장된 bundle로 F의 라벨을 예측. 후처리 설정은 bundle["post"]에 내장되어 있다.
     post = {"method": "none"|"cummax"|"hmm", "use_w": bool, "hmm": {...} | None}
@@ -86,4 +107,6 @@ def predict_labels(bundle, F, post=None, P=None):
     pred = rule_gate(F, pred, post.get("gate"))
     if post["method"] == "cummax":
         pred = cummax_pp(F, pred)
+    elif post["method"].startswith("cummax") and post["method"][6:].isdigit():  # cummax2, cummax3 ...
+        pred = stable_cummax_pp(F, pred, int(post["method"][6:]))
     return pred.astype(int), P

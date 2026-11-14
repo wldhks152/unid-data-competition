@@ -57,7 +57,7 @@ def main():
     ap.add_argument("--skip_check", action="store_true", help="누수 자가검사 생략")
     # 진단용 덮어쓰기 (재학습 없이 같은 model.joblib로 변형 제출 파일을 만든다)
     ap.add_argument("--alpha", type=float, default=None, help="앙상블 LightGBM 비율 덮어쓰기 (1=LightGBM만, 0=CatBoost만)")
-    ap.add_argument("--post", choices=["none", "cummax"], default=None, help="후처리 덮어쓰기")
+    ap.add_argument("--post", choices=["none", "cummax", "cummax2", "cummax3", "cummax4"], default=None, help="후처리 덮어쓰기")
     ap.add_argument("--use_w", type=int, choices=[0, 1], default=None, help="클래스 배율 w 사용 여부 덮어쓰기")
     ap.add_argument("--gate", choices=["none", "12", "1234"], default=None, help="단계 전환 규칙 게이트 (src/model.py rule_gate)")
     ap.add_argument("--alpha_split", type=float, nargs=2, default=None, metavar=("LO", "HI"),
