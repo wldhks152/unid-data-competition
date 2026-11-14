@@ -122,7 +122,9 @@ def main():
             print(f"  Validation(Train 전체 학습)  " + "  ".join(msg) + f"  ({time.time() - t0:.0f}s)")
         oof = pd.concat(oof, ignore_index=True)
         write_oof(oof, os.path.join(a.out_dir, f"oof_{name}.csv"))
-        if kind in ("rn18", "rn18s"):  # 추론은 custom 멤버로 (src/rn18.predict_proba)
+        if kind == "s23":
+            mem = {"kind": "s23", "models": models, "feats": feats}
+        elif kind in ("rn18", "rn18s"):  # 추론은 custom 멤버로 (src/rn18.predict_proba)
             mem = {"kind": "custom", "module": "src.rn18", "models": models, "feats": None, "device": "auto"}
         else:
             mem = {"kind": kind, "models": models, "feats": feats if kind != "team" else None}

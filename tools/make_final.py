@@ -24,6 +24,8 @@ def main():
     ap.add_argument("--weights", nargs="+", type=float, required=True, help="멤버별 비율 (모든 단계 공통, 합 1)")
     ap.add_argument("--post", default="cummax", choices=["raw", "cummax", "cummax2", "cummax3"])
     ap.add_argument("--out", default="model.joblib")
+    ap.add_argument("--refine23", default=None, help="2↔3 전용 멤버 파일 (예: runs/stack_trv/s23.joblib)")
+    ap.add_argument("--refine_alpha", type=float, default=0.5, help="2↔3 전용 모델 반영 비율 (0~1)")
     a = ap.parse_args()
     assert len(a.members) == len(a.weights) and abs(sum(a.weights) - 1) < 1e-6, "비율은 멤버 수만큼, 합 1"
     if a.src:
@@ -40,7 +42,14 @@ def main():
         for n, path in pairs:
             print(f"  {n} ← {path} (모델 {len(b['members'][n]['models'])}개)")
     b["blend"] = {m: np.full(len(b["classes"]), w) for m, w in zip(a.members, a.weights)}
-    b["feats"] = sorted({c for mem in b["members"].values() for c in (mem.get("feats") or [])})
+    b.pop("refine23", None)
+    if a.refine23:
+        r = joblib.load(a.refine23)
+        assert r["kind"] == "s23", "--refine23에는 s23 멤버 파일을 주세요"
+        b["refine23"] = {"models": r["models"], "feats": r["feats"], "alpha": a.refine_alpha}
+        print(f"  2↔3 전용 모델 ← {a.refine23} (모델 {len(r['models'])}개, 반영 비율 {a.refine_alpha})")
+    b["feats"] = sorted({c for mem in list(b["members"].values()) + ([b["refine23"]] if a.refine23 else [])
+                         for c in (mem.get("feats") or [])})
     b["w"] = np.ones(len(b["classes"]))
     b["post"] = {"method": "none" if a.post == "raw" else a.post, "use_w": False, "hmm": None, "gate": "none", "module": None}
     joblib.dump(b, a.out, compress=3)
