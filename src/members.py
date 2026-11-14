@@ -8,6 +8,7 @@ kind
   cat  : CatBoost, 우리 피처, 5/10/15초 증강 행, 클래스 균형 가중
   ord  : 순서형 LightGBM ("단계 ≥ k" 이진 5개 → 단조 보정 → 6클래스), 우리 피처
   ordx : ord와 같되 이진 분류기를 XGBoost(GPU, CUDA)로
+  tabnet: pytorch-tabnet (GPU), 우리 피처 306개 (표준화 + 결측 표시)
   et   : ExtraTrees (sklearn, CPU), 우리 피처 (lgb와 같은 306개)
   xgb  : XGBoost (GPU), 우리 피처, 5/10/15초 증강 행, 클래스 균형 가중
   team : 팀원 CatBoost v1 (원본 5초 행 + 팀원 피처 33개)
@@ -114,6 +115,53 @@ class ExtraTreesMember:
         return out
 
 
+class TabNetMember:
+    """pytorch-tabnet (GPU). 입력은 fold 학습 행의 평균·표준편차로 표준화 후 ±5로 자르고 NaN·inf는 0(=학습 평균).
+    결측 여부도 정보라 NaN 비율이 있는 열은 결측 표시(0/1) 열을 함께 넣는다. 조기 종료 없이 고정 epoch (검증 정보 미사용).
+    학습 행이 많아 max_rows행을 무작위 추출, 클래스 균형 샘플링(weights=1)."""
+
+    def __init__(self, seed, max_rows=150000, epochs=20, gpu=True):
+        self.seed, self.max_rows, self.epochs, self.gpu = seed, max_rows, epochs, gpu
+        self.classes_ = CLASSES
+
+    def _X(self, X):
+        X = np.asarray(X, dtype=np.float32)
+        miss = ~np.isfinite(X[:, self.miss_cols])
+        Z = np.where(np.isfinite(X), (X - self.mu) / self.sd, 0.0)
+        return np.concatenate([np.clip(Z, -5, 5), miss], axis=1).astype(np.float32)
+
+    def fit(self, X, y):
+        import time
+        import torch
+        from pytorch_tabnet.tab_model import TabNetClassifier
+        t0 = time.time()
+        X, y = np.asarray(X, dtype=np.float32), np.asarray(y).astype(int)
+        if len(y) > self.max_rows:
+            ix = np.random.default_rng(self.seed).choice(len(y), self.max_rows, replace=False)
+            X, y = X[ix], y[ix]
+        fin = np.isfinite(X)
+        Xn = np.where(fin, X, np.nan)
+        self.mu = np.nan_to_num(np.nanmean(Xn, 0)).astype(np.float32)
+        self.sd = np.nan_to_num(np.nanstd(Xn, 0), nan=1.0).astype(np.float32)
+        self.sd[self.sd < 1e-6] = 1.0
+        self.miss_cols = np.flatnonzero((~fin).mean(0) > 0.01)
+        dev = "cuda" if self.gpu and torch.cuda.is_available() else "cpu"
+        self.m = TabNetClassifier(n_d=32, n_a=32, n_steps=4, gamma=1.5, lambda_sparse=1e-4,
+                                  optimizer_params=dict(lr=2e-2), seed=self.seed, device_name=dev, verbose=5,
+                                  scheduler_fn=torch.optim.lr_scheduler.StepLR, scheduler_params=dict(step_size=8, gamma=0.5))
+        self.m.fit(self._X(X), y - 1, max_epochs=self.epochs, patience=0, batch_size=8192, virtual_batch_size=512,
+                   weights=1, drop_last=True)
+        print(f"    TabNet {len(y):,}행 × {self._X(X[:1]).shape[1]}열, {self.epochs} epoch ({dev}, {time.time() - t0:.0f}s)", flush=True)
+        return self
+
+    def predict_proba(self, X):
+        P = self.m.predict_proba(self._X(X))
+        out = np.zeros((len(P), len(CLASSES)))
+        for j, c in enumerate(self.m.classes_):
+            out[:, int(c)] = P[:, j]
+        return out
+
+
 def make_xgb(seed, gpu=True):
     """XGBoost (GPU: device=cuda, tree_method=hist). 클래스 균형은 sample_weight로."""
     from xgboost import XGBClassifier
@@ -133,6 +181,8 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         m = make_cat(seed, iterations=cat_iters, gpu=gpu)
         m.fit(trn_F[feats].to_numpy(np.float32), trn_F["label"].to_numpy())
         return m
+    if kind == "tabnet":
+        return TabNetMember(seed, gpu=gpu).fit(trn_F[feats], trn_F["label"])
     if kind == "et":
         return ExtraTreesMember(seed).fit(trn_F[feats], trn_F["label"])
     if kind in ("ord", "ordx"):  # ordx: 같은 순서형을 XGBoost(CUDA)로
@@ -167,7 +217,7 @@ def predict_member(kind, model, F=None, feats=None, raw=None, timg=None, emb=Non
         return _reorder(model.predict_proba(F[feats]), model.classes_)
     if kind == "cat":
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_)
-    if kind in ("ord", "ordx", "et"):
+    if kind in ("ord", "ordx", "et", "tabnet"):
         return model.predict_proba(F[feats])
     if kind == "xgb":
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_ + 1)
