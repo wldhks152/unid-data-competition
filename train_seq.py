@@ -87,6 +87,8 @@ def main():
     ap.add_argument("--hidden", type=int, default=None, help="rocket: 0이면 선형, >0이면 은닉층 1개")
     ap.add_argument("--only_folds", type=int, nargs="*", default=None, help="일부 fold만 (빠른 확인용)")
     ap.add_argument("--device", default="auto")
+    ap.add_argument("--holdout_valid", action="store_true",
+                    help="--folds_json(Train 실험만)과 함께: Validation 실험을 마지막 fold로 두고 Train 전체로 학습해 예측 (stack.py --holdout_valid와 같은 형식)")
     a = ap.parse_args()
 
     device = torch.device("cuda" if a.device == "auto" and torch.cuda.is_available() else
@@ -117,10 +119,17 @@ def main():
     splits = load_folds(a.folds_json) if a.folds_json else experiment_folds(tv)
     print(f"  fold: {a.folds_json or 'experiment_folds(tv)'}")
     fold_of = {g: f for f, (_, va) in enumerate(splits) for g in va}
+    if a.holdout_valid:
+        if a.synthetic or not a.folds_json:
+            raise SystemExit("--holdout_valid는 실제 데이터와 --folds_json(Train 실험만의 fold)이 필요합니다")
+        vex = set(d["valid"][KEY])
+        assert not vex & set(fold_of), "folds_json에 Validation 실험이 들어 있습니다 (Train만으로 만든 fold여야 함)"
+        fold_of.update({g: len(splits) for g in vex})
+        print(f"  Validation 실험 {len(vex)}개 → fold {len(splits)} (Train 전체로 학습해 예측)")
     miss = set(tv[KEY]) - set(fold_of)
     if miss:
         raise SystemExit(f"fold에 없는 실험 {len(miss)}개: {list(miss)[:5]}")
-    n_folds = len(splits)
+    n_folds = len(splits) + (1 if a.holdout_valid else 0)
 
     print("[2] 시퀀스 만들기 (5/10/15초 버전)")
     t0 = time.time()
@@ -135,7 +144,8 @@ def main():
     for f in range(n_folds):
         if a.only_folds is not None and f not in a.only_folds:
             continue
-        tr = [s for s in seqs if fold_of[s["grp"]] != f and s["ver"] in train_v]
+        hold = len(splits) if a.holdout_valid else -1  # Validation은 어떤 fold의 학습에도 넣지 않는다
+        tr = [s for s in seqs if fold_of[s["grp"]] not in (f, hold) and s["ver"] in train_v]
         va = [s for s in seqs if fold_of[s["grp"]] == f and s["ver"] in eval_v]
         t0 = time.time()
         models = [core.fit(cfg, tr, device, a.seed + 100 * f + i) for i in range(a.n_seeds)]
