@@ -19,7 +19,7 @@ def device():
 
 
 def predict_proba(member, F, df, timg=None):
-    seqs = build_sequences(df)
+    seqs = build_sequences(df, extra=member.get("cfg", {}).get("extra_ch", False))
     P = core.predict_ensemble(member["models"], seqs, device())
     sid = np.concatenate([np.asarray(s["sample_id"]).astype(str) for s in seqs])
     pos = {s: i for i, s in enumerate(sid)}

@@ -86,6 +86,7 @@ def main():
     ap.add_argument("--batch", type=int, default=None)
     ap.add_argument("--cw23", type=float, default=None, help="2·3단계 클래스 가중 배율 (GRU/TCN)")
     ap.add_argument("--aux23", type=float, default=None, help="2↔3 경계 보조 손실 비중 (GRU/TCN)")
+    ap.add_argument("--extra_ch", action="store_true", help="핵심 센서 15초·60초 기울기 채널 추가 (seq/prep.py _extra_channels)")
     ap.add_argument("--ordinal", action="store_true", help="출력층을 순서형(누적 로짓)으로 (GRU/TCN)")
     ap.add_argument("--hidden", type=int, default=None, help="rocket: 0이면 선형, >0이면 은닉층 1개")
     ap.add_argument("--only_folds", type=int, nargs="*", default=None, help="일부 fold만 (빠른 확인용)")
@@ -107,6 +108,8 @@ def main():
             cfg[k] = getattr(a, k)
     if a.ordinal:
         cfg["ordinal"] = True
+    if a.extra_ch:
+        cfg["extra_ch"] = True
     name = a.name or f"seq_{a.model}"
     os.makedirs(a.out_dir, exist_ok=True)
     out = os.path.join(a.out_dir, name)
@@ -139,7 +142,7 @@ def main():
     print("[2] 시퀀스 만들기 (5/10/15초 버전)")
     t0 = time.time()
     vers = sorted(set(TRAIN_VERSIONS) | set(EVAL_VERSIONS))
-    seqs = build_sequences(versions(tv, vers))
+    seqs = build_sequences(versions(tv, vers), extra=cfg.get("extra_ch", False))
     print(f"  {len(seqs)} 시퀀스, 채널 {seqs[0]['X'].shape[1]}개, 최대 길이 {max(len(s['X']) for s in seqs)} ({time.time() - t0:.0f}s)")
     train_v = {f"k{k}o{o}" for k, o in TRAIN_VERSIONS}
     eval_v = {f"k{k}o{o}" for k, o in EVAL_VERSIONS}

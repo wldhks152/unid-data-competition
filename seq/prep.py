@@ -38,8 +38,24 @@ def channel_names(sens):
     return names + ["log_dt", "elapsed_min"] + COND
 
 
-def build_sequences(df):
-    """df(여러 실험, 임의 간격) → 실험별 dict 리스트.
+EXTRA_SENS = ["meas_t1", "meas_t2", "meas_v", "meas_p", "thermal_t"]
+
+
+def _extra_channels(t, g):
+    """짧은·중간 창 기울기 채널 (extra=True일 때만): 핵심 센서 5개의 15초·60초 기울기(slog 공간, 5초당). 과거 행만 사용."""
+    cols = []
+    for c in EXTRA_SENS:
+        x = slog(pd.to_numeric(g[c], errors="coerce").ffill().to_numpy(float)) if c in g.columns else np.full(len(t), np.nan)
+        for w in (15, 60):
+            j = np.searchsorted(t, t - w, side="left")
+            dt = t - t[j]
+            with np.errstate(invalid="ignore", divide="ignore"):
+                cols.append(np.where(dt > 0, (x - x[j]) * 5.0 / np.where(dt > 0, dt, 1), 0.0))
+    return np.stack(cols, 1).astype(np.float32)
+
+
+def build_sequences(df, extra=False):
+    """df(여러 실험, 임의 간격) → 실험별 dict 리스트. extra=True면 _extra_channels를 뒤에 붙인다.
     각 dict: key, X (L, C) float32 (표준화 전), y (L,) 또는 None, sample_id (L,), t (L,), ver, grp"""
     df = df.sort_values([KEY, T], kind="stable")
     sens = [c for c in SENSORS if c in df.columns]
@@ -63,6 +79,8 @@ def build_sequences(df):
         X[:, 3 * len(sens) + 1] = t / 60.0
         for i, c in enumerate(COND):
             X[:, 3 * len(sens) + 2 + i] = conds[c].loc[g.index].to_numpy()
+        if extra:
+            X = np.concatenate([X, _extra_channels(t, g)], axis=1)
         out.append({
             "key": e, "X": X, "t": t,
             "y": g[Y].to_numpy(int) if Y in g.columns else None,

@@ -38,6 +38,9 @@ def main():
     ap.add_argument("--members", nargs="+", default=["lgb", "dino", "seq_gru"])
     ap.add_argument("--weights", nargs="+", type=float, default=[0.4, 0.4, 0.2])
     ap.add_argument("--min_exp", type=int, default=3, help="이보다 실험이 적은 그룹은 표에서 뺀다")
+    ap.add_argument("--group", nargs="*", default=None,
+                    help="[2][3]을 볼 그룹 (예: bat_cc=73 tr_method=2). 없으면 점수가 가장 낮은 그룹 하나")
+    ap.add_argument("--skip_table", action="store_true", help="[1] 조건별 표를 건너뛴다")
     a = ap.parse_args()
 
     o, Ps, _ = align_oofs({m: read_oof(os.path.join(a.stack_dir, f"oof_{m}.csv")) for m in a.members})
@@ -50,9 +53,10 @@ def main():
     m5 = (o.ver == "k1o0").to_numpy()
     y = o.y.to_numpy()
 
-    print(f"[1] 조건별 점수 (실험 {o.grp.nunique()}개, 9:1:1 가중 / 5초 단계별 F1)")
+    if not a.skip_table:
+        print(f"[1] 조건별 점수 (실험 {o.grp.nunique()}개, 9:1:1 가중 / 5초 단계별 F1)")
     worst = None
-    for c in COND:
+    for c in (COND if not a.skip_table else []):
         vals = o[c].dropna().unique()
         if len(vals) > 8:  # 연속값(용량 등)은 4분위로
             q = pd.qcut(o.groupby("grp")[c].first(), 4, duplicates="drop")
@@ -74,9 +78,30 @@ def main():
             if worst is None or s < worst[2]:
                 worst = (col, v, s)
 
-    col, v, s = worst
+    targets = []
+    for spec in (a.group or []):
+        c, val = spec.split("=", 1)
+        vals = o[c].dropna().unique()
+        match = [x for x in vals if str(x) == val or (isinstance(x, (int, float, np.number)) and _num(val) == float(x))]
+        assert match, f"{c}에 {val} 값이 없어요 (있는 값 {sorted(map(str, vals))})"
+        targets.append((c, match[0]))
+    if not targets:
+        targets = [worst[:2]]
+    for col, v in targets:
+        analyze(o, raw, lab, y, m5, col, v)
+
+
+def _num(x):
+    try:
+        return float(x)
+    except ValueError:
+        return None
+
+
+def analyze(o, raw, lab, y, m5, col, v):
     g = (o[col] == v).to_numpy()
-    print(f"\n[2] 가장 약한 그룹: {col} = {v} (점수 {s:.4f}) — 5초 혼동행렬 (행=정답 1~6, 열=예측 1~6)")
+    s = score_fn(o[g].reset_index(drop=True), lab[g], require_all=False)
+    print(f"\n[2] 그룹: {col} = {v} (실험 {o.grp[g].nunique()}개, 점수 {s:.4f}) — 5초 혼동행렬 (행=정답 1~6, 열=예측 1~6)")
     for name, mask in [("그 그룹", g), ("나머지", ~g)]:
         mm = mask & m5
         cm = pd.crosstab(pd.Categorical(y[mm], CLASSES), pd.Categorical(lab[mm], CLASSES), dropna=False).to_numpy()
@@ -88,7 +113,7 @@ def main():
         print("    오류 상위: " + ", ".join(f"{i}→{j} {x}행({x / tot:.0%})" for x, i, j in sorted(off, reverse=True)[:5]))
 
     print(f"\n[3] 정답 단계 구간의 센서 통계 (실험별 계산 후 평균) — {col} = {v} vs 나머지")
-    raw = raw.sort_values([KEY, T])
+    raw = raw.sort_values([KEY, T]).copy()
     if col.endswith("_bin"):
         gset = set(o.grp[g].unique())
         raw["_g"] = raw[KEY].isin(gset)
@@ -114,11 +139,6 @@ def main():
     with pd.option_context("display.width", 140, "display.max_columns", 20):
         print(tab.to_string())
 
-    print("\n[4] lgb 피처에 조건 열이 있나")
-    lg = os.path.join(a.stack_dir, "lgb.joblib")
-    if os.path.exists(lg):
-        feats = joblib.load(lg).get("feats") or []
-        print("  " + ", ".join(f"{c}: {'있음' if c in feats else '없음'}" for c in COND) + f"  (피처 {len(feats)}개)")
 
 
 if __name__ == "__main__":
