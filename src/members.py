@@ -8,6 +8,7 @@ kind
   cat  : CatBoost, 우리 피처, 5/10/15초 증강 행, 클래스 균형 가중
   ord  : 순서형 LightGBM ("단계 ≥ k" 이진 5개 → 단조 보정 → 6클래스), 우리 피처
   ordx : ord와 같되 이진 분류기를 XGBoost(GPU, CUDA)로
+  et   : ExtraTrees (sklearn, CPU), 우리 피처 (lgb와 같은 306개)
   xgb  : XGBoost (GPU), 우리 피처, 5/10/15초 증강 행, 클래스 균형 가중
   team : 팀원 CatBoost v1 (원본 5초 행 + 팀원 피처 33개)
   rn18s: rn18 + 현재 행 센서 13개 (팀원 v2)
@@ -78,6 +79,41 @@ class OrdinalLGB:
         return np.clip(P, 0, None)
 
 
+class ExtraTreesMember:
+    """sklearn ExtraTrees (CPU 전용: sklearn에는 GPU 구현이 없음). NaN·inf는 -1e6으로 바꿔 트리가 따로 가르게 한다.
+    학습 행이 많아 fold마다 최대 max_rows행을 무작위 추출해 학습한다 (클래스 균형 가중)."""
+
+    def __init__(self, seed, n_estimators=300, max_rows=300000):
+        self.seed, self.n_estimators, self.max_rows = seed, n_estimators, max_rows
+        self.classes_ = CLASSES
+
+    @staticmethod
+    def _X(X):
+        X = np.asarray(X, dtype=np.float32)
+        return np.where(np.isfinite(X), X, np.float32(-1e6))
+
+    def fit(self, X, y):
+        import time
+        from sklearn.ensemble import ExtraTreesClassifier
+        t0 = time.time()
+        X, y = self._X(X), np.asarray(y)
+        if len(y) > self.max_rows:
+            ix = np.random.default_rng(self.seed).choice(len(y), self.max_rows, replace=False)
+            X, y = X[ix], y[ix]
+        self.m = ExtraTreesClassifier(n_estimators=self.n_estimators, min_samples_leaf=10, max_features="sqrt",
+                                      class_weight="balanced", n_jobs=-1, random_state=self.seed).fit(X, y)
+        print(f"    ExtraTrees {len(y):,}행 학습 ({time.time() - t0:.0f}s)", flush=True)
+        return self
+
+    def predict_proba(self, X):
+        P = self.m.predict_proba(self._X(X))
+        cls = [int(c) for c in self.m.classes_]
+        out = np.zeros((len(P), len(CLASSES)))
+        for j, c in enumerate(cls):
+            out[:, list(CLASSES).index(c)] = P[:, j]
+        return out
+
+
 def make_xgb(seed, gpu=True):
     """XGBoost (GPU: device=cuda, tree_method=hist). 클래스 균형은 sample_weight로."""
     from xgboost import XGBClassifier
@@ -97,6 +133,8 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         m = make_cat(seed, iterations=cat_iters, gpu=gpu)
         m.fit(trn_F[feats].to_numpy(np.float32), trn_F["label"].to_numpy())
         return m
+    if kind == "et":
+        return ExtraTreesMember(seed).fit(trn_F[feats], trn_F["label"])
     if kind in ("ord", "ordx"):  # ordx: 같은 순서형을 XGBoost(CUDA)로
         return OrdinalLGB(seed, backend="xgb" if kind == "ordx" else "lgb", gpu=gpu).fit(trn_F[feats], trn_F["label"])
     if kind == "xgb":  # 라벨 1..6 → 0..5
@@ -129,7 +167,7 @@ def predict_member(kind, model, F=None, feats=None, raw=None, timg=None, emb=Non
         return _reorder(model.predict_proba(F[feats]), model.classes_)
     if kind == "cat":
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_)
-    if kind in ("ord", "ordx"):
+    if kind in ("ord", "ordx", "et"):
         return model.predict_proba(F[feats])
     if kind == "xgb":
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_ + 1)

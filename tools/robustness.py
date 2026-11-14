@@ -53,11 +53,20 @@ def main():
     ap.add_argument("--n_exp", type=int, nargs="+", default=[8, 11])
     ap.add_argument("--n_sim", type=int, default=5000)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--rows", nargs="*", default=None,
+                    help="name=w,name=w ... (첫 조합이 비교 기준). 없으면 기본 COMBOS")
     a = ap.parse_args()
 
+    if a.rows:
+        COMBOS.clear()
+        for r in a.rows:
+            COMBOS[r.replace("seq_", "")] = dict((kv.split("=")[0], float(kv.split("=")[1])) for kv in r.split(","))
     names = sorted({n for c in COMBOS.values() for n in c})
     have = [n for n in names if os.path.exists(os.path.join(a.stack_dir, f"oof_{n}.csv"))]
     combos = {k: v for k, v in COMBOS.items() if all(n in have for n in v)}
+    skipped = [k for k in COMBOS if k not in combos]
+    if skipped:
+        print(f"OOF가 없어 뺀 조합: {skipped}")
     o, Ps, _ = align_oofs({m: read_oof(os.path.join(a.stack_dir, f"oof_{m}.csv")) for m in have})
     idx = {n: i for i, n in enumerate(have)}
     grps = np.array(sorted(o.grp.unique()))
@@ -84,10 +93,10 @@ def main():
         picks = np.stack([rng.choice(len(grps), n, replace=False) for _ in range(a.n_sim)])
         S = {k: weighted(cm[picks].sum(1)) for k, cm in CM.items()}
         print(f"\n[1] Private 시뮬레이션: 실험 {n}개 × {a.n_sim}회")
-        print(f"  {'조합':<26s} 평균    표준편차  하위10%  하위5%   최종 대비 이긴 비율")
+        print(f"  {'조합':<34s} 평균    표준편차  하위10%  하위5%   최종 대비 이긴 비율")
         for k, s in S.items():
             win = "" if k == base else f"{(s > S[base]).mean():.0%} (비김 {(s == S[base]).mean():.0%})"
-            print(f"  {k:<26s} {s.mean():.4f}  {s.std():.4f}    {np.quantile(s, .1):.4f}   {np.quantile(s, .05):.4f}   {win}")
+            print(f"  {k:<34s} {s.mean():.4f}  {s.std():.4f}    {np.quantile(s, .1):.4f}   {np.quantile(s, .05):.4f}   {win}")
 
     print("\n[2] fold별 점수 (0~4 Train, 5 Validation)")
     folds = sorted(set(fold_of_g))
