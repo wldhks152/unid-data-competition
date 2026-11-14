@@ -6,6 +6,7 @@ kind
   lgb  : LightGBM, 우리 피처(make_features), 5/10/15초 증강 행으로 학습
   cat  : CatBoost, 우리 피처, 5/10/15초 증강 행, 클래스 균형 가중
   team : 팀원 CatBoost v1 (원본 5초 행 + 팀원 피처 33개)
+  rn18s: rn18 + 현재 행 센서 13개 (팀원 v2)
   rn18 : 팀원 CatBoost v1 피처 33개 + ImageNet ResNet18 임베딩 512개 (src/rn18.py). 저장 시 custom 멤버가 된다.
 모든 멤버의 확률 열 순서는 CLASSES(1~6)로 맞춘다.
 """
@@ -40,9 +41,9 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         return m
     if kind == "team":
         return fit_team(trn_raw, timg)
-    if kind == "rn18":
+    if kind in ("rn18", "rn18s"):
         from . import rn18
-        return rn18.fit(trn_raw, timg, emb, gpu=gpu)
+        return rn18.fit(trn_raw, timg, emb, gpu=gpu, sensors=kind == "rn18s")
     raise ValueError(kind)
 
 
@@ -59,7 +60,7 @@ def predict_member(kind, model, F=None, feats=None, raw=None, timg=None, emb=Non
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_)
     if kind == "team":
         return team_proba(model, raw, timg, F.sample_id.values, list(CLASSES))
-    if kind == "rn18":
+    if kind in ("rn18", "rn18s"):
         from . import rn18
         return rn18.proba(model, raw, timg, emb, F.sample_id.values)
     raise ValueError(kind)

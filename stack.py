@@ -40,6 +40,8 @@ def main():
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--splits", nargs="+", default=["train", "valid"], choices=["train", "valid"],
                     help="학습에 쓸 split (예: --splits train → Validation 제외, fold도 Train 실험으로만 나눔)")
+    ap.add_argument("--holdout_valid", action="store_true",
+                    help="--splits train과 함께: fold 학습 뒤 Train 전체로 한 번 더 학습해 Validation을 마지막 fold로 예측해 OOF에 붙인다")
     a = ap.parse_args()
     if a.cpu:
         from src.model import DEVICE
@@ -47,18 +49,21 @@ def main():
     os.makedirs(a.out_dir, exist_ok=True)
 
     print("[1] 데이터 로드 (Train + Validation)")
-    d = load(a.data_dir, tuple(a.splits))
+    if a.holdout_valid and a.splits != ["train"]:
+        ap.error("--holdout_valid는 --splits train과 함께 써야 합니다")
+    img_splits = ["train", "valid"] if a.holdout_valid else a.splits
+    d = load(a.data_dir, tuple(img_splits))
     tv = pd.concat([d[s] for s in a.splits], ignore_index=True)
     kinds = {m.split("_")[0] for m in a.members}
     timg = emb = None
-    if kinds & {"team", "rn18"}:
+    if kinds & {"team", "rn18", "rn18s"}:
         timg = pd.concat([team_image_features(d[s], os.path.dirname(find_csv(a.data_dir, s)),
-                                              cache_dir=a.cache_dir, tag=s) for s in a.splits])
-    if "rn18" in kinds:
+                                              cache_dir=a.cache_dir, tag=s) for s in img_splits])
+    if kinds & {"rn18", "rn18s"}:
         from src import rn18
         emb = pd.concat([rn18.embeddings(d[s], os.path.dirname(find_csv(a.data_dir, s)),
                                          cache_dir=a.cache_dir, tag=s, device="cpu" if a.cpu else "auto")
-                         for s in a.splits])
+                         for s in img_splits])
     causality_check(tv)
 
     print("[2] 피처 생성 (5/10/15초 버전)")
@@ -67,6 +72,11 @@ def main():
     feats = [c for c in feature_columns(F) if F[c].nunique(dropna=True) > 1]
     raw_ver = {f"k{k}o{o}": subsample(tv, k, o) for k, o in EVAL_VERSIONS}
     print(f"  {len(F):,} rows × {len(feats)} features ({time.time() - t0:.0f}s)")
+
+    if a.holdout_valid:
+        va = d["valid"]
+        Fv = pd.concat([make_features(subsample(va, k, o)) for k, o in EVAL_VERSIONS], ignore_index=True)
+        raw_v = {f"k{k}o{o}": subsample(va, k, o) for k, o in EVAL_VERSIONS}
 
     splits = experiment_folds(tv)
     save_folds(splits, os.path.join(a.out_dir, "folds.json"))
@@ -95,9 +105,23 @@ def main():
                 oof.append(dd)
                 msg.append(f"{5 * k}s {f1_score(dd.y, CLASSES[P.argmax(1)], average='macro'):.3f}")
             print(f"  fold{fold}  " + "  ".join(msg) + f"  ({time.time() - t0:.0f}s)")
+        if a.holdout_valid:  # Train 전체로 학습 → Validation을 fold len(splits)로
+            t0 = time.time()
+            m = fit_member(kind, a.seed + 99 + seed_off, trn_F=F, feats=feats, trn_raw=tv, timg=timg,
+                           gpu=not a.cpu, cat_iters=a.cat_iters, emb=emb)
+            models.append(m)
+            msg = []
+            for k, o in EVAL_VERSIONS:
+                ver = f"k{k}o{o}"
+                v = Fv[Fv.ver == ver]
+                P = predict_member(kind, m, v, feats, raw_v[ver], timg, emb)
+                dd = make_oof(P, v, ver, len(splits), extra_cols=GATE_COLS)
+                oof.append(dd)
+                msg.append(f"{5 * k}s {f1_score(dd.y, CLASSES[P.argmax(1)], average='macro'):.3f}")
+            print(f"  Validation(Train 전체 학습)  " + "  ".join(msg) + f"  ({time.time() - t0:.0f}s)")
         oof = pd.concat(oof, ignore_index=True)
         write_oof(oof, os.path.join(a.out_dir, f"oof_{name}.csv"))
-        if kind == "rn18":  # 추론은 custom 멤버로 (src/rn18.predict_proba)
+        if kind in ("rn18", "rn18s"):  # 추론은 custom 멤버로 (src/rn18.predict_proba)
             mem = {"kind": "custom", "module": "src.rn18", "models": models, "feats": None, "device": "auto"}
         else:
             mem = {"kind": kind, "models": models, "feats": feats if kind != "team" else None}

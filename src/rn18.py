@@ -18,6 +18,9 @@ from . import team_catboost as TM
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "weights" / "encoder" / "manifest.json"
 EMB_COLS = [f"resnet18_{i:03d}" for i in range(512)]
+# 팀원 v2 (experiments/resnet18_catboost_v2): 현재 행의 센서 13개를 그대로 덧붙인다
+ADDED_SENSORS = ["meas_ch4", "meas_co", "meas_co2", "meas_hcn", "meas_hcl", "meas_hf", "meas_n2o",
+                 "meas_no", "meas_no2", "meas_so2", "thermal_t", "atmp_t", "indu_t"]
 CLASSES = np.arange(1, 7)
 _ENC = {}
 _MEMO = {}          # 프로세스 안 경로별 임베딩 메모 (같은 이미지 파일을 다시 읽지 않음)
@@ -79,26 +82,30 @@ def embeddings(df, image_root, cache_dir=None, tag=None, device="auto"):
     return out
 
 
-def build_X(frame, timg, emb):
+def build_X(frame, timg, emb, sensors=False):
+    """sensors=False: v1 (33 + 512), True: v2 (33 + 512 + 현재 센서 13)."""
     base = TM.build_features(frame, timg)
     E = emb.reindex(frame["sample_id"].values)
     assert E.notna().all(axis=1).all(), "ResNet18 특징이 없는 샘플이 있습니다."
-    return pd.concat([base.reset_index(drop=True), pd.DataFrame(E.to_numpy(np.float32), columns=EMB_COLS)], axis=1)
+    parts = [base.reset_index(drop=True), pd.DataFrame(E.to_numpy(np.float32), columns=EMB_COLS)]
+    if sensors:
+        parts.append(TM.numeric(frame, ADDED_SENSORS).reset_index(drop=True))
+    return pd.concat(parts, axis=1)
 
 
-def fit(raw, timg, emb, thread_count=None, gpu=True):
+def fit(raw, timg, emb, thread_count=None, gpu=True, sensors=False):
     """팀원 CatBoost v1 설정 그대로, gpu=True면 CatBoost를 GPU로 학습한다 (545개 특징이라 CPU는 느림)."""
-    X = build_X(raw, timg, emb)
+    X = build_X(raw, timg, emb, sensors)
     pipe = TM.build_model(thread_count=thread_count or os.cpu_count() or 4)
     if gpu and "classifier" in pipe.named_steps and type(pipe.named_steps["classifier"]).__name__ == "CatBoostClassifier":
         pipe.set_params(classifier__task_type="GPU", classifier__devices="0")
     pipe.fit(X, raw["label"].astype(int).to_numpy())
-    return {"features": list(X.columns), "pipeline": pipe}
+    return {"features": list(X.columns), "pipeline": pipe, "sensors": sensors}
 
 
 def proba(model, raw, timg, emb, sample_ids):
     frame = raw.set_index("sample_id").loc[list(sample_ids)].reset_index()
-    X = build_X(frame, timg, emb)[model["features"]]
+    X = build_X(frame, timg, emb, model.get("sensors", False))[model["features"]]
     P = model["pipeline"].predict_proba(X)
     tc = [int(c) for c in model["pipeline"].classes_]
     return P[:, [tc.index(int(c)) for c in CLASSES]]
