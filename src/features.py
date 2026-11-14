@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from .data import COND, KEY, SENSORS, T, Y
+from .images import IMG_COLS
 
 PEAK_COLS = ["meas_t1", "meas_t2", "thermal_t", "meas_p"]  # 최고점 이후 경과시간 대상
 WINDOWS = [30, 60, 120]  # 초
@@ -53,7 +54,7 @@ def _peak_feats(t, X):
 def make_features(df):
     """(실험, 시간) 순으로 정렬된 피처 DataFrame을 반환. sample_id로 원래 행과 매칭."""
     df = df.sort_values([KEY, T], kind="stable").reset_index(drop=True)
-    sens = [c for c in SENSORS if c in df.columns]
+    sens = [c for c in SENSORS + IMG_COLS if c in df.columns]  # 이미지 통계도 같은 시계열 피처 적용
     peak = [c for c in PEAK_COLS if c in df.columns]
     blocks = []
     for _, g in df.groupby(KEY, sort=False):

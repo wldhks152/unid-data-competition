@@ -1,24 +1,24 @@
-"""후처리 튜닝 — train.py가 저장한 OOF 확률만으로 후처리 방식을 비교·선택한다 (재학습 불필요).
-    python tune_pp.py --run lgb_v1      → outputs/lgb_v1/pp.json  (predict.py --pp hmm 이 사용)
+"""후처리 튜닝 (선택) — train.py가 저장한 OOF 확률로 HMM 후처리까지 비교한다 (재학습 불필요).
+    python tune_pp.py --model model.joblib            # 비교만
+    python tune_pp.py --model model.joblib --apply    # 최고 방식을 model.joblib에 기록
 
-비교: raw / +w / cummax / hmm / hmm+w
+비교: raw / +w / cummax / +w+cummax / hmm / hmm+w
 선택 점수: Test 구성(5초 9개, 10초 1개, 15초 1개 실험)에 맞춘 가중 Macro-F1
 누수 방지: 전이 행렬 A는 fold별로 '평가 fold를 제외한' 실험의 label로만 추정해서 평가한다.
 """
 import argparse
 import itertools
-import json
 import os
 
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.metrics import f1_score
 
-from src.data import KEY, T
+from src.data import KEY, T, VER_W
 from src.model import cummax_pp, tune_class_weights
 from src.postprocess import estimate_transitions, hmm_filter
 
-VER_W = {"k1o0": 9, "k2o0": 1, "k3o0": 1}  # Test 실험 간격 구성
 TAUS = [0.5, 1.0, 1.5, 2.0, 3.0]  # 클수록 모델 확률을 더 믿음 (단계 전환이 빨라짐)
 BACKS = [0.0, 1e-3, 1e-2]
 
@@ -35,13 +35,15 @@ def score(oof, pred):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run", default="lgb_v1")
+    ap.add_argument("--model", default="model.joblib")
+    ap.add_argument("--apply", action="store_true", help="최고 방식을 model.joblib의 후처리 설정으로 저장")
     a = ap.parse_args()
-    run = os.path.join("outputs", a.run)
-    oof = pd.read_csv(os.path.join(run, "oof.csv"))
+    stem = os.path.splitext(a.model)[0]
+    bundle = joblib.load(a.model)
+    oof = pd.read_csv(f"{stem}_oof.csv")
     oof = oof[oof.ver.isin(VER_W)].reset_index(drop=True)
-    pcols = [c for c in oof.columns if c.startswith("p") and c[1:].isdigit()]
-    classes = np.array([int(c[1:]) for c in pcols])
+    classes = np.asarray(bundle["classes"])
+    pcols = [f"p{c}" for c in classes]
     cidx = {c: i for i, c in enumerate(classes)}
     K = len(classes)
     P = oof[pcols].to_numpy()
@@ -49,7 +51,6 @@ def main():
     prior = base[pcols].to_numpy().mean(0)  # 모델이 평균적으로 내는 클래스 분포
 
     def hmm_oof(tau, back):
-        """fold별로 평가 fold를 뺀 label로 A를 추정해 필터링 (CV 누수 방지)."""
         out = np.empty_like(P)
         for f in sorted(oof.fold.unique()):
             A, init = estimate_transitions(seqs(base[base.fold != f], cidx), K, back=back)
@@ -58,13 +59,12 @@ def main():
                                 {"A": A, "init": init, "prior": prior, "tau": tau})
         return out
 
-    rows = []
-    w, _ = tune_class_weights(P, oof.y.to_numpy(), classes)
+    w = np.asarray(bundle["w"])
     p_raw, p_w = classes[P.argmax(1)], classes[(P * w).argmax(1)]
-    rows.append(("raw", score(oof, p_raw)))
-    rows.append(("+w", score(oof, p_w)))
-    rows.append(("cummax", score(oof, cummax_pp(oof, p_raw))))
-    rows.append(("+w+cummax", score(oof, cummax_pp(oof, p_w))))
+    rows = {
+        ("none", False): score(oof, p_raw), ("none", True): score(oof, p_w),
+        ("cummax", False): score(oof, cummax_pp(oof, p_raw)), ("cummax", True): score(oof, cummax_pp(oof, p_w)),
+    }
 
     print(f"HMM 그리드 탐색: tau={TAUS}, back={BACKS}")
     best = None
@@ -75,30 +75,34 @@ def main():
         if best is None or s["weighted"] > best[2]["weighted"]:
             best = (tau, back, s, H)
     tau, back, s_h, H = best
-    rows.append((f"hmm(tau={tau},back={back})", s_h))
     w_h, _ = tune_class_weights(H, oof.y.to_numpy(), classes)
-    rows.append(("hmm+w", score(oof, classes[(H * w_h).argmax(1)])))
+    rows[("hmm", False)] = s_h
+    rows[("hmm", True)] = score(oof, classes[(H * w_h).argmax(1)])
 
+    names = {("none", False): "raw", ("none", True): "+w", ("cummax", False): "cummax",
+             ("cummax", True): "+w+cummax", ("hmm", False): f"hmm(tau={tau},back={back})", ("hmm", True): "hmm+w"}
+    cur = (bundle["post"]["method"], bundle["post"]["use_w"])
     print("\n=== 후처리 비교 (OOF Macro-F1) ===")
     print(f"  {'방식':<28s} {'5s':>7s} {'10s':>7s} {'15s':>7s} {'가중':>7s}")
-    for name, s in rows:
-        print(f"  {name:<28s} {s['k1o0']:7.4f} {s['k2o0']:7.4f} {s['k3o0']:7.4f} {s['weighted']:7.4f}")
-    win = max(rows, key=lambda r: r[1]["weighted"])[0]
-    print(f"\n  최고: {win}")
-    print("  ※ w·tau는 OOF에 맞춘 값이라 약간 낙관적. 차이가 0.005 미만이면 단순한 쪽을 고르세요.")
+    for k, s in rows.items():
+        mark = "  ← 현재 model.joblib" if k == cur else ""
+        print(f"  {names[k]:<28s} {s['k1o0']:7.4f} {s['k2o0']:7.4f} {s['k3o0']:7.4f} {s['weighted']:7.4f}{mark}")
+    win = max(rows, key=lambda k: rows[k]["weighted"])
+    gain = rows[win]["weighted"] - rows[cur]["weighted"]
+    print(f"\n  최고: {names[win]}  (현재 대비 {gain:+.4f})")
+    print("  ※ OOF에 맞춘 값이라 약간 낙관적. 차이가 0.005 미만이면 현재(단순한 쪽) 유지를 권장.")
 
-    # 최종 파라미터: 전체 label로 A 재추정
-    A, init = estimate_transitions(seqs(base, cidx), K, back=back)
-    pp = {"A": A.round(6).tolist(), "init": init.tolist(), "prior": prior.tolist(), "tau": tau, "back": back,
-          "w": w_h.tolist(), "classes": classes.tolist(),
-          "oof": {n: {k: round(v, 4) for k, v in s.items()} for n, s in rows}}
-    with open(os.path.join(run, "pp.json"), "w", encoding="utf-8") as f:
-        json.dump(pp, f, ensure_ascii=False, indent=1)
-    pp_opt = "hmm" if win.startswith("hmm") else ("cummax" if "cummax" in win else "none")
-    use_w = win in ("+w", "+w+cummax", "hmm+w")
-    print(f"\n저장 → {run}/pp.json")
-    print(f"추천 제출: python predict.py --data data --run {a.run} --pp {pp_opt}"
-          + ("" if use_w else " --no-tune"))
+    if a.apply and win != cur:
+        hmm = None
+        if win[0] == "hmm":
+            A, init = estimate_transitions(seqs(base, cidx), K, back=back)  # 전체 label로 재추정
+            hmm = {"A": A.tolist(), "init": init.tolist(), "prior": prior.tolist(), "tau": tau,
+                   "w": (w_h if win[1] else np.ones(K)).tolist()}
+        bundle["post"] = {"method": win[0], "use_w": bool(win[1]), "hmm": hmm}
+        joblib.dump(bundle, a.model, compress=3)
+        print(f"  → {a.model} 후처리를 '{names[win]}'로 갱신")
+    elif a.apply:
+        print("  → 이미 최고 방식이라 변경 없음")
 
 
 if __name__ == "__main__":

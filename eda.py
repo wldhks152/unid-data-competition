@@ -1,5 +1,5 @@
 """EDA — 모델링 방향을 정하는 핵심 질문에 답한다.
-    python eda.py --data data
+    python eda.py --data_dir <battery_data_light 경로>
 """
 import argparse
 
@@ -11,7 +11,7 @@ from src.data import COND, KEY, T, Y, load
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default="data")
+    ap.add_argument("--data_dir", "--data", dest="data", default="data")
     a = ap.parse_args()
     d = load(a.data)
     tr, va, te = d["train"], d["valid"], d["test"]

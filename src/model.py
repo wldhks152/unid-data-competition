@@ -48,21 +48,20 @@ def cummax_pp(F, pred):
     return s.loc[order].groupby(F.loc[order, KEY].values).cummax().loc[F.index].to_numpy()
 
 
-def predict_labels(bundle, F, use_w=True, cummax=False, hmm=None):
-    """저장된 bundle(models, feats, classes, w)로 F의 라벨을 예측.
-    hmm: tune_pp.py가 만든 pp.json 내용 → forward 필터 후 그 안의 w를 사용."""
+def predict_labels(bundle, F, post=None):
+    """저장된 bundle로 F의 라벨을 예측. 후처리 설정은 bundle["post"]에 내장되어 있다.
+    post = {"method": "none"|"cummax"|"hmm", "use_w": bool, "hmm": {...} | None}"""
+    post = post or bundle["post"]
     P = np.mean([m.predict_proba(F[bundle["feats"]]) for m in bundle["models"]], axis=0)
     classes = bundle["classes"]
-    if hmm is not None:
+    w = np.asarray(bundle["w"])
+    if post["method"] == "hmm":
         from .postprocess import hmm_filter
-        assert list(hmm["classes"]) == list(classes), "pp.json과 모델의 클래스 불일치"
-        P = hmm_filter(F.reset_index(drop=True), P, hmm)
-        w = np.asarray(hmm["w"])
-    else:
-        w = bundle["w"]
-    if not use_w:
+        P = hmm_filter(F.reset_index(drop=True), P, post["hmm"])
+        w = np.asarray(post["hmm"]["w"])
+    if not post["use_w"]:
         w = np.ones(len(classes))
     pred = classes[(P * w).argmax(1)]
-    if cummax:
+    if post["method"] == "cummax":
         pred = cummax_pp(F, pred)
     return pred.astype(int), P
