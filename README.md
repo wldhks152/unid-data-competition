@@ -1,6 +1,6 @@
 # Uni-D 배터리 열폭주 6단계 분류
 
-**최종 모델: LightGBM(과거 방향 시계열·사건 피처) 0.4 + DINOv2 이미지 CatBoost 0.4 + 인과 GRU 시퀀스 모델 0.2 확률 앙상블 → 단계 누적최대(cummax) 후처리.** 열화상 이미지와 센서를 함께 사용해요.
+**최종 모델: LightGBM(과거 방향 시계열·사건 피처) 0.4 + DINOv2 이미지 CatBoost 0.4 + 인과 GRU 시퀀스 모델 0.2 확률 앙상블 → 4~6단계 상승 재확인 후 단계 누적최대 후처리(`src/late.py`).** 열화상 이미지와 센서를 함께 사용해요. Public 0.9004177879 (제출 #34).
 
 ## 팀 정보
 - 팀명: <팀명>
@@ -18,6 +18,7 @@
 | `src/features.py` | 센서·이미지 통계에 대한 과거 방향 시계열 피처 생성, 누수 검사 |
 | `src/images.py` | 열화상 PNG의 의사색 팔레트 위치(보라→빨강→흰색)를 상대 온도로 환산해 분포 통계 계산 (사전학습 모델 없음) |
 | `src/model.py` | LightGBM 정의, Macro-F1용 클래스 배율 튜닝, 후처리(cummax) |
+| `src/late.py` | 최종 후처리: 4~6단계로 올라갈 때 재확인을 요구한 뒤 누적최대 (과거 행만 사용) |
 | `src/ensemble.py` | 우리 LightGBM과 팀원 CatBoost 확률을 α:(1-α)로 섞음 |
 | `src/team_catboost.py` | 팀원 CatBoost v1의 피처·모델 코드 (브랜치 `experiments/catboost_v1`에서 그대로 가져옴) |
 | `src/postprocess.py` | 단조 단계 HMM forward 필터 (선택적 후처리) |
@@ -28,13 +29,15 @@
 | `seq/`, `train_seq.py` | 인과 GRU 시퀀스 모델 (과거 행만 보는 단방향 GRU) 학습·추론 |
 | `stack.py` | Train 5-fold + Validation 홀드아웃으로 멤버별 OOF와 가중치 저장 |
 | `tools/make_final.py` | 멤버·블렌드 가중치·후처리를 `model.joblib` 하나로 고정 |
+| `tools/eval_late.py` | 재확인 후처리 매개변수 비교 (Train 5-fold / Validation / 무작위 실험 묶음 승률) |
+| `tools/public_check.py` | Public 점수 패턴이 실험 몇 개의 우연으로 설명되는지 확인 |
 | `tools/check_submission.py` | 제출 전 재현성·이미지 사용 점검 |
 | `tools/report_metrics.py` | 발표용 단계별 F1·혼동행렬 (집계값만) |
 | `tools/get_dinov2.py` | DINOv2-small 가중치 내려받기 (revision 고정, 해시 기록) |
 | `train.py` | (초기 버전) Train+Validation K-fold 학습 |
 | `test.py` | 입력 CSV에 들어 있는 행만으로 추론하고 제출 파일 생성, 누수 자동 검사 |
 | `eda.py` | 데이터 점검 |
-| `model.joblib` | 최종 가중치 (LightGBM 6개 + DINOv2 CatBoost 6개 + GRU 6개 + 피처 목록 + 블렌드 가중치 + 후처리 설정) |
+| `model.joblib` | 최종 가중치 (LightGBM 6개 + DINOv2 CatBoost 6개 + GRU 6개 + 피처 목록 + 블렌드 가중치 + 후처리 설정 `late`) |
 | `weights/` | 동결 사전학습 이미지 인코더 가중치 (`dinov2-small/`, `encoder/`=ResNet18) |
 
 ## 최종 모델 구성
@@ -44,7 +47,9 @@
 | `dino` | 0.4 | 팀원 CatBoost v1 피처 33개 + 현재 행 센서 13개 + 열화상 DINOv2-small 임베딩 384차원 | CatBoost (GPU) |
 | `seq_gru` | 0.2 | 실험별 센서 시퀀스 (현재값·첫 관측 대비 변화·직전 대비 변화율, Δt, 경과시간, 실험 조건) | 단방향 2층 GRU (hidden 128), 처음부터 학습. 각 시점 출력은 그 시점까지의 행만 봄 |
 
-- 세 멤버의 클래스 확률을 위 가중치로 더한 뒤 argmax, 실험 안에서 지금까지 예측한 단계의 누적 최댓값(cummax)을 최종 단계로 써요. 과거 예측만 사용해요.
+- 세 멤버의 클래스 확률을 위 가중치로 더한 뒤 각 행의 argmax를 구해요.
+- **후처리(`late`)**: 4단계 이상으로 올라가려면 그 단계 이상일 확률의 합이 0.75 이상이거나, 직전 관측(15초 이내)의 argmax도 그 단계 이상이어야 해요. 1~3단계와 실험의 첫 관측은 argmax 그대로예요. 그다음 실험 안에서 누적 최댓값을 최종 단계로 써요. 한 행만 튀어서 높은 단계로 굳는 것을 막는 장치이고, 현재와 직전 행만 사용해요.
+- 후처리 아이디어는 팀원 제출 #34(브랜치 `submission/34-team27-late`)에서 왔고, `src/late.py`는 같은 규칙을 매개변수로 일반화한 구현이에요. 같은 Test 제출 파일을 바이트 단위로 재현하는 것을 확인했어요(SHA-256 `f0068bef…`).
 - 각 멤버는 fold 모델 5개 + Train 전체 모델 1개(GRU는 fold마다 같은 설정)의 확률 평균으로 추론해요.
 - `model.joblib`에 세 멤버의 가중치, 피처 목록, 블렌드 가중치, 후처리 설정이 모두 들어 있어요. 재학습 없이 `test.py`만으로 결과를 재현해요.
 
@@ -59,7 +64,8 @@ python stack.py --data_dir <battery_data_light 경로> --splits train --holdout_
 python train_seq.py --data_dir <battery_data_light 경로> --model gru --out_dir runs/stack_trv \
                     --folds_json runs/stack_trv/folds.json --holdout_valid
 python tools/make_final.py --members lgb=runs/stack_trv/lgb.joblib dino=runs/stack_trv/dino.joblib \
-                           seq_gru=runs/stack_trv/seq_gru.joblib --weights 0.4 0.4 0.2 --post cummax --out model.joblib
+                           seq_gru=runs/stack_trv/seq_gru.joblib --weights 0.4 0.4 0.2 \
+                           --post late --post_module src.late --out model.joblib
 
 # 추론
 python test.py --input <battery_data_light 경로>/test/test.csv \
@@ -83,9 +89,14 @@ python test.py --input <battery_data_light 경로>/test/test.csv \
 |---|---|---|---|
 | LightGBM 0.5 + 팀원 v2(ResNet18+센서) 0.5 | 0.9059 | 0.8860 | 0.8879 |
 | LightGBM 0.3 + DINOv2 CatBoost 0.7 | 0.8953 | 0.8875 | 0.8899 |
-| **LightGBM 0.4 + DINOv2 CatBoost 0.4 + GRU 0.2 (최종)** | **0.9030** | **0.9105** | **0.8917** |
+| LightGBM 0.4 + DINOv2 CatBoost 0.4 + GRU 0.2 (cummax) | 0.9030 | 0.9105 | 0.8917 |
+| **같은 블렌드 + 재확인 후처리 `late` (최종)** | **0.9023** | **0.9093** | **0.9004** |
 
-### 최종 모델 단계별 성능 (5초 간격, cummax 후)
+- 최종 선택: 두 검증 점수는 cummax와 거의 같고(무작위 실험 묶음에서 cummax 대비 승률 47%·45%), Public이 0.0087 높아 **Train·Validation·Public 셋 중 최저**가 가장 높은 조합을 골랐어요. Test 예측은 cummax 버전과 31행(0.9%)만 달라요.
+- 재확인 범위를 2·3단계까지 넓히거나 확신 기준을 0.9 이상으로 올리면 두 검증 점수가 모두 떨어졌어요 (`tools/eval_late.py`, 32가지 조합).
+- Public 패턴 확인 (`tools/public_check.py`): 우리 검증 실험 97개에서 3~5개를 뽑았을 때, Public에서 본 차이(이미지 CatBoost 단독이 블렌드보다 +0.039, LightGBM 단독이 −0.064)가 함께 나온 경우는 2만 번 중 0번이었어요. Test는 Train·Validation과 성격이 다를 가능성이 있어서, 한쪽 검증 점수에만 맞추지 않았어요.
+
+### 블렌드 단계별 성능 (5초 간격, cummax 후 — 최종 `late`와 두 검증 점수 차이 0.001 이내)
 | 단계 | 1 | 2 | 3 | 4 | 5 | 6 | Macro F1 | 9:1:1 가중 |
 |---|---|---|---|---|---|---|---|---|
 | Train 5-fold OOF (78개 실험) | 0.9996 | 0.8483 | 0.9067 | 0.9017 | 0.9034 | 0.8589 | 0.9031 | 0.9030 |
@@ -94,7 +105,8 @@ python test.py --input <battery_data_light 경로>/test/test.csv \
 - 가장 많이 틀리는 곳은 **2↔3단계 경계**예요. Train OOF에서 정답 2를 3으로 733행, 정답 3을 2로 845행 예측했어요. 그다음은 4↔5와 5↔6 경계예요. 1단계는 거의 완벽해요.
 - 혼동행렬 전체는 `reports/metrics.json`에 있어요 (`tools/report_metrics.py`로 재생성).
 
-- 시도했지만 채택하지 않은 것: 단계군별 가중치, seed 평균(LightGBM·CatBoost·GRU 3-seed), 2↔3단계 전용 보정 모델, TCN 시퀀스 모델, ResNet50 이미지 특징, XGBoost·우리 피처 CatBoost 추가, 로지스틱 회귀 메타 스태킹(최저 0.843), 순서형(누적) LightGBM·XGBoost·GRU, 추가 인과 피처 12개(최근 30/60초 변동성·전압-온도 결합; 검증 최저 0.9059였지만 Public 0.8587로 하락), 짧은 창 피처 12개(직전 관측 대비·15초 변화율; lgb 설정 XGBoost에서 효과 없음, GRU 채널로도 블렌드 하락), 벤팅 기준 전압·압력 피처 6개, 벤팅 이후 기준선 대비 이탈 점수 피처(온도·전압·압력의 수준과 30초 기울기 z-score, 최대·합·초과 누적; XGBoost·CatBoost 모두 Validation 하락), ExtraTrees, MiniRocket(GPU 합성곱의 길이별 수치 차이로 뒷부분 삭제 검사 실패), TabNet, Train+Validation 학습. 모두 두 검증 점수의 최저점을 올리지 못했어요.
+- 시도했지만 채택하지 않은 것: 단계군별 가중치, seed 평균(LightGBM·CatBoost·GRU 3-seed), 2↔3단계 전용 보정 모델, TCN 시퀀스 모델, ResNet50 이미지 특징, XGBoost·우리 피처 CatBoost 추가, 로지스틱 회귀 메타 스태킹(최저 0.843), 순서형(누적) LightGBM·XGBoost·GRU, 추가 인과 피처 12개(최근 30/60초 변동성·전압-온도 결합; 검증 최저 0.9059였지만 Public 0.8587로 하락), 짧은 창 피처 12개(직전 관측 대비·15초 변화율; lgb 설정 XGBoost에서 효과 없음, GRU 채널로도 블렌드 하락), 벤팅 기준 전압·압력 피처 6개, 벤팅 이후 기준선 대비 이탈 점수 피처(온도·전압·압력의 수준과 30초 기울기 z-score, 최대·합·초과 누적; XGBoost·CatBoost 모두 Validation 하락), ExtraTrees, MiniRocket(GPU 합성곱의 길이별 수치 차이로 뒷부분 삭제 검사 실패), TabNet, Train+Validation 학습, GRU에 이미지 임베딩 채널 추가(블렌드 승률 31%), 팀원 v2 ResNet18에 이미지 변화 피처 추가. 모두 두 검증 점수의 최저점을 올리지 못했어요.
+- **이미지 변화 피처 (`dinod`, `src/rn18.emb_dynamics`)**: 2→3 전환은 센서 임계값 규칙이 없어서(일치율 최고 33%), DINOv2 임베딩이 첫 프레임·15~120초 전 프레임과 얼마나 달라졌는지, 처음 보는 화면인지 등 14개 피처를 만들었어요(과거 프레임만 사용). DINOv2 CatBoost 단독 Validation이 0.8298→0.8804로 크게 올랐고, 블렌드도 최저 0.9030→0.9067, 무작위 실험 묶음 승률 75%·76%로 검증 기준을 모두 통과했어요. 하지만 Test 예측은 6행만 달랐고 Public이 같았으며(0.8917), 재확인 후처리와 합치면 Public 0.8969로 최종(0.9004)보다 낮아 채택하지 않았어요.
 - 조건별 오류 분석: `python tools/error_analysis.py --stack_dir runs/stack_trv --data_dir <경로>`. 가장 약한 그룹은 39Ah 셀(0.749)로, 4단계가 평균 33초·5단계가 8초로 매우 짧고 급격해 30초 이상 창 피처가 전환을 늦게 잡아요(4단계 77행 중 64행을 3으로 예측).
 - 조건별 2↔3 오류의 원인 (같은 도구, `--group bat_cc=73 tr_method=2`):
   - tr_method=2: 2·3단계에 전압이 크게 오르고(+2.5V, +7.5V) 압력도 커지지만, 3단계 승온은 작아요(dT1/dt 0.16, 나머지 1.47). 2→3 신호가 온도가 아니라 전압·압력이에요.
