@@ -178,6 +178,31 @@ def _fast_feats(t, g):
     return out
 
 
+def _since_vent_feats(t, g):
+    """벤팅(t1 ≥ 45°C 첫 도달) 기준 전압·압력 변화 (s_ 접두사, 과거만). 오류 분석에서 과충전(tr_method=2)은
+    2·3단계에 전압이 크게 오르고(ΔV +2.5, +7.5) 73Ah는 3단계 압력 상승이 커서, 벤팅 이후 누적 변화와 그 속도를 넣는다."""
+    out = {}
+    if "meas_t1" not in g.columns:
+        return out
+    t1 = g["meas_t1"].to_numpy(float)
+    with np.errstate(invalid="ignore"):
+        hit = np.maximum.accumulate(np.nan_to_num(t1 >= 45, nan=0).astype(bool))
+    iv = int(np.argmax(hit)) if hit.any() else len(t)
+    after = np.arange(len(t)) >= iv
+    tsv = np.where(after, t - t[min(iv, len(t) - 1)], np.nan)
+    for c, nm in [("meas_v", "v"), ("meas_p", "p")]:
+        if c not in g.columns:
+            continue
+        x = g[c].to_numpy(float)
+        x0 = x[iv] if iv < len(t) else np.nan
+        d = np.where(after, x - x0, np.nan)
+        out[f"s_{nm}_since_vent"] = d
+        out[f"s_{nm}_since_vent_rate"] = d / np.maximum(tsv, 5.0)
+        with np.errstate(invalid="ignore"):
+            out[f"s_{nm}_since_vent_max"] = np.where(after, np.fmax.accumulate(np.where(after, d, -np.inf)), np.nan)
+    return out
+
+
 def make_features(df):
     """(실험, 시간) 순으로 정렬된 피처 DataFrame을 반환. sample_id로 원래 행과 매칭."""
     df = df.sort_values([KEY, T], kind="stable").reset_index(drop=True)
@@ -200,6 +225,7 @@ def make_features(df):
         cols.update(_event_feats(t, g))
         cols.update(_extra_feats(t, g))
         cols.update(_fast_feats(t, g))
+        cols.update(_since_vent_feats(t, g))
         if imgs:
             I = g[imgs].to_numpy(float)
             for a, c in enumerate(imgs):
