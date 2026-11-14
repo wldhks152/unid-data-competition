@@ -21,13 +21,16 @@ GASES = ["meas_ch4", "meas_co", "meas_co2", "meas_hcn", "meas_hcl", "meas_hf",
 # 열폭주 '사건' 정의 — 단계별 센서 중앙값(EDA)과 열폭주 문헌의 단계 구분에 근거한 고정 임계값.
 #   1 정상 → 2 벤팅(압력 급등) → 3 가열 지속 → 4 내부단락(전압 0V) → 5 열화상 온도 급락 → 6 열폭주(고온)
 # 각 사건에 대해 '지금까지 발생했나'와 '처음 발생 후 경과시간'을 만든다 (과거 정보만 사용).
+# 단계 전환 규칙 분석(train+valid, '처음 임계값 도달 시점 = 전환 시점' 일치율)으로 찾은 값을 포함:
+#   1→2: t1 ≥ 45°C (100%) · 3→4: V ≤ 2.45 / 최고전압 대비 하락 ≥ 0.78 (가열 96~97%), ≥ 1.0 (과충전 92%)
+#   4→5(과충전): t1 ≥ 146.5 (92%) · 5→6(과충전): t2 ≥ 242 (54%)
 EVENTS = (
     [(f"p_jump{x}", "p_d0", ">", x) for x in (5, 10, 20, 35)]          # 벤팅: 압력 급등
-    + [(f"v_below{x}", "v", "<", x) for x in (3.9, 3.5, 2.0, 0.5)]     # 전압 저하 → 내부단락
-    + [(f"v_drop{x}", "v_dropmax", ">", x) for x in (0.2, 0.5, 1.5)]   # 최고 전압 대비 하락
+    + [(f"v_below{x}", "v", "<", x) for x in (3.9, 3.5, 3.08, 2.45, 2.0, 0.91, 0.5)]  # 전압 저하 → 내부단락
+    + [(f"v_drop{x}", "v_dropmax", ">", x) for x in (0.2, 0.5, 0.78, 1.0, 1.5, 2.45, 5.0)]  # 최고 전압 대비 하락
     + [(f"v_over{x}", "v", ">", x) for x in (4.3, 4.6, 5.0)]           # 과충전: 정격 초과
-    + [(f"t1_above{x}", "t1", ">", x) for x in (50, 80, 110, 150, 250)]
-    + [(f"t2_above{x}", "t2", ">", x) for x in (60, 90, 120, 200)]
+    + [(f"t1_above{x}", "t1", ">=", x) for x in (45, 50, 80, 110, 146.5, 250)]
+    + [(f"t2_above{x}", "t2", ">=", x) for x in (60, 66.4, 90, 122, 135.7, 200, 242)]
     + [(f"t1_rate{x}", "t1_rate30", ">", x) for x in (0.2, 0.5, 1.0, 3.0)]  # °C/s, 열폭주 트리거
     + [(f"th_drop{x}", "th_dropmax", ">", x) for x in (15, 30, 60)]   # 열화상 온도 급락 (5단계)
     + [(f"gas{x}", "gas_d0", ">", x) for x in (1, 5, 20)]              # 가스 첫 검출
@@ -88,7 +91,7 @@ def _event_feats(t, g):
     idx = np.arange(len(t))
     for name, s, op, x in EVENTS:
         with np.errstate(invalid="ignore"):
-            hit = (sig[s] > x) if op == ">" else (sig[s] < x)
+            hit = {">": sig[s] > x, ">=": sig[s] >= x, "<": sig[s] < x}[op]
         occ = np.maximum.accumulate(np.nan_to_num(hit, nan=0).astype(bool))
         first = np.where(occ.any(), np.argmax(occ), len(t))
         out[f"ev_{name}"] = occ.astype(float)
