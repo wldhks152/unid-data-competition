@@ -19,7 +19,14 @@ def device():
 
 
 def predict_proba(member, F, df, timg=None):
-    seqs = build_sequences(df, extra=member.get("cfg", {}).get("extra_ch", False))
+    img = None
+    if member.get("img"):  # 이미지 채널을 쓰는 GRU: DINOv2 임베딩을 뽑아 학습 때 저장한 PCA 축으로 투영
+        from src import dino, rn18
+        root = df.attrs.get("image_root") or rn18.IMAGE_ROOT
+        assert root, "이미지 채널 멤버는 이미지 폴더가 필요합니다 (test.py --image_root)."
+        emb = dino.embeddings(df, root, device=member.get("device", "auto"))
+        img = dict(member["img"], E=emb.to_numpy(np.float32), pos={str(s): i for i, s in enumerate(emb.index)})
+    seqs = build_sequences(df, extra=member.get("cfg", {}).get("extra_ch", False), img=img)
     P = core.predict_ensemble(member["models"], seqs, device())
     sid = np.concatenate([np.asarray(s["sample_id"]).astype(str) for s in seqs])
     pos = {s: i for i, s in enumerate(sid)}

@@ -87,6 +87,9 @@ def main():
     ap.add_argument("--cw23", type=float, default=None, help="2·3단계 클래스 가중 배율 (GRU/TCN)")
     ap.add_argument("--aux23", type=float, default=None, help="2↔3 경계 보조 손실 비중 (GRU/TCN)")
     ap.add_argument("--extra_ch", action="store_true", help="핵심 센서 15초·60초 기울기 채널 추가 (seq/prep.py _extra_channels)")
+    ap.add_argument("--img", action="store_true", help="이미지 채널 추가: DINOv2 임베딩 PCA 성분 + 시간 변화 피처 (seq/prep.py _img_channels)")
+    ap.add_argument("--img_comp", type=int, default=24, help="--img의 PCA 성분 수")
+    ap.add_argument("--cache_dir", default="cache", help="DINOv2 임베딩 캐시 (stack.py와 같은 폴더)")
     ap.add_argument("--ordinal", action="store_true", help="출력층을 순서형(누적 로짓)으로 (GRU/TCN)")
     ap.add_argument("--hidden", type=int, default=None, help="rocket: 0이면 선형, >0이면 은닉층 1개")
     ap.add_argument("--only_folds", type=int, nargs="*", default=None, help="일부 fold만 (빠른 확인용)")
@@ -110,6 +113,8 @@ def main():
         cfg["ordinal"] = True
     if a.extra_ch:
         cfg["extra_ch"] = True
+    if a.img:
+        cfg["img"] = a.img_comp
     name = a.name or f"seq_{a.model}"
     os.makedirs(a.out_dir, exist_ok=True)
     out = os.path.join(a.out_dir, name)
@@ -123,6 +128,20 @@ def main():
         tv = pd.concat([d["train"], d["valid"]], ignore_index=True)
     tv["sample_id"] = tv["sample_id"].astype(str)
     print(f"  {len(tv):,} rows, {tv[KEY].nunique()} experiments")
+    img = None
+    if a.img:
+        from seq.prep import make_img
+        if a.synthetic:  # 동작 확인용 가짜 임베딩
+            emb = pd.DataFrame(np.random.default_rng(0).normal(size=(len(tv), 384)).astype(np.float32), index=tv["sample_id"])
+            fit_ids = tv["sample_id"]
+        else:
+            from src import dino
+            from src.data import find_csv
+            emb = pd.concat([dino.embeddings(d[s], os.path.dirname(find_csv(a.data_dir, s)), cache_dir=a.cache_dir, tag=s)
+                             for s in ("train", "valid")])
+            fit_ids = d["train"]["sample_id"]
+        img = make_img(emb, a.img_comp, fit_ids=fit_ids)
+        print(f"  이미지 채널: DINOv2 {emb.shape[1]}차원 → PCA {a.img_comp}개 (Train 이미지로만 축 계산) + 변화 피처")
 
     splits = load_folds(a.folds_json) if a.folds_json else experiment_folds(tv)
     print(f"  fold: {a.folds_json or 'experiment_folds(tv)'}")
@@ -142,7 +161,7 @@ def main():
     print("[2] 시퀀스 만들기 (5/10/15초 버전)")
     t0 = time.time()
     vers = sorted(set(TRAIN_VERSIONS) | set(EVAL_VERSIONS))
-    seqs = build_sequences(versions(tv, vers), extra=cfg.get("extra_ch", False))
+    seqs = build_sequences(versions(tv, vers), extra=cfg.get("extra_ch", False), img=img)
     print(f"  {len(seqs)} 시퀀스, 채널 {seqs[0]['X'].shape[1]}개, 최대 길이 {max(len(s['X']) for s in seqs)} ({time.time() - t0:.0f}s)")
     train_v = {f"k{k}o{o}" for k, o in TRAIN_VERSIONS}
     eval_v = {f"k{k}o{o}" for k, o in EVAL_VERSIONS}
@@ -174,6 +193,8 @@ def main():
     res = report(oof)
     write_oof(oof, os.path.join(a.out_dir, f"oof_{name}.csv"))
     member = {"kind": "custom", "module": "seq.member", "name": name, "cfg": cfg, "models": all_models}
+    if img is not None:
+        member["img"] = {"mean": img["mean"], "W": img["W"], "embedder": "dino"}
     joblib.dump(member, f"{out}.joblib", compress=3)
     with open(f"{out}_cv.json", "w", encoding="utf-8") as fp:
         json.dump({"args": vars(a), "cfg": cfg, "score": res, "n_rows": len(oof)}, fp, ensure_ascii=False, indent=2)
