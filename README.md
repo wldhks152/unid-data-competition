@@ -94,8 +94,12 @@ python test.py --input <battery_data_light 경로>/test/test.csv \
 - 가장 많이 틀리는 곳은 **2↔3단계 경계**예요. Train OOF에서 정답 2를 3으로 733행, 정답 3을 2로 845행 예측했어요. 그다음은 4↔5와 5↔6 경계예요. 1단계는 거의 완벽해요.
 - 혼동행렬 전체는 `reports/metrics.json`에 있어요 (`tools/report_metrics.py`로 재생성).
 
-- 시도했지만 채택하지 않은 것: 단계군별 가중치, seed 평균(LightGBM·CatBoost·GRU 3-seed), 2↔3단계 전용 보정 모델, TCN 시퀀스 모델, ResNet50 이미지 특징, XGBoost·우리 피처 CatBoost 추가, 로지스틱 회귀 메타 스태킹(최저 0.843), 순서형(누적) LightGBM·XGBoost·GRU, 추가 인과 피처 12개(최근 30/60초 변동성·전압-온도 결합; 검증 최저 0.9059였지만 Public 0.8587로 하락), 짧은 창 피처 12개(직전 관측 대비·15초 변화율; lgb 설정 XGBoost에서 효과 없음), ExtraTrees, MiniRocket(GPU 합성곱의 길이별 수치 차이로 뒷부분 삭제 검사 실패), TabNet, Train+Validation 학습. 모두 두 검증 점수의 최저점을 올리지 못했어요.
+- 시도했지만 채택하지 않은 것: 단계군별 가중치, seed 평균(LightGBM·CatBoost·GRU 3-seed), 2↔3단계 전용 보정 모델, TCN 시퀀스 모델, ResNet50 이미지 특징, XGBoost·우리 피처 CatBoost 추가, 로지스틱 회귀 메타 스태킹(최저 0.843), 순서형(누적) LightGBM·XGBoost·GRU, 추가 인과 피처 12개(최근 30/60초 변동성·전압-온도 결합; 검증 최저 0.9059였지만 Public 0.8587로 하락), 짧은 창 피처 12개(직전 관측 대비·15초 변화율; lgb 설정 XGBoost에서 효과 없음, GRU 채널로도 블렌드 하락), 벤팅 기준 전압·압력 피처 6개, ExtraTrees, MiniRocket(GPU 합성곱의 길이별 수치 차이로 뒷부분 삭제 검사 실패), TabNet, Train+Validation 학습. 모두 두 검증 점수의 최저점을 올리지 못했어요.
 - 조건별 오류 분석: `python tools/error_analysis.py --stack_dir runs/stack_trv --data_dir <경로>`. 가장 약한 그룹은 39Ah 셀(0.749)로, 4단계가 평균 33초·5단계가 8초로 매우 짧고 급격해 30초 이상 창 피처가 전환을 늦게 잡아요(4단계 77행 중 64행을 3으로 예측).
+- 조건별 2↔3 오류의 원인 (같은 도구, `--group bat_cc=73 tr_method=2`):
+  - tr_method=2: 2·3단계에 전압이 크게 오르고(+2.5V, +7.5V) 압력도 커지지만, 3단계 승온은 작아요(dT1/dt 0.16, 나머지 1.47). 2→3 신호가 온도가 아니라 전압·압력이에요.
+  - 73Ah: 3단계가 짧고(263초, 나머지 746초) 높은 온도(93°C, 나머지 62°C)에서 시작하며 압력 상승이 커요(+54).
+  - 벤팅 기준 전압·압력 피처 6개를 넣어 봤지만 두 그룹 점수가 오르지 않았어요. 전압 관련 정보는 이미 피처에 있고, 2↔3 오류는 정보 부족보다 경계가 그룹마다 다른 신호로 정해지는 데서 생기는 것으로 판단했어요.
 - 견고성 검증: `python tools/robustness.py --stack_dir runs/stack_trv --data_dir <경로>` (실험 8·11개 무작위 추출 5,000회 점수 분포, fold별 편차, 조건별 점수)
 - 단계별 F1과 혼동행렬: `python tools/report_metrics.py --members lgb dino seq_gru --weights 0.4 0.4 0.2` (`reports/metrics.json`, 집계값만 저장)
 
