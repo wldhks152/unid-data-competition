@@ -131,6 +131,17 @@ GRU 시퀀스 모델과 LightGBM은 사전학습 가중치 없이 대회 데이�
 | 저장 위치 | `weights/dinov2-small/` (`manifest.json`의 revision·SHA-256으로 검증, 추론 때 내려받지 않음) |
 | 코드 | `src/dino.py`, 내려받기 `tools/get_dinov2.py` (학습 전 1회, 추론 때는 내려받지 않음) |
 
+### ResNet50 (비교 실험용, 최종 채택 시 기재 유지)
+| 항목 | 내용 |
+|---|---|
+| 모델 | ResNet50, ImageNet-1K 사전학습 (torchvision `ResNet50_Weights.IMAGENET1K_V2`) |
+| 출처 | https://download.pytorch.org/models/resnet50-11ad3fa6.pth (torchvision 공식 배포, 대회 시작 전 공개) |
+| 버전 | torchvision `IMAGENET1K_V2` 가중치, 파일 SHA-256은 `weights/resnet50/manifest.json` (`11ad3fa6…`로 시작) |
+| 라이선스 | 모델 구조 코드: torchvision BSD-3-Clause (`third_party/LICENSE.torchvision`). 가중치: torchvision 배포 조건을 따름 |
+| 사용 방식 | 가중치 **동결**, fc 층을 뺀 전역 평균풀링 2048차원 특징만 사용 (미세조정 없음). 이미지마다 독립 계산 |
+| 저장 위치 | `weights/resnet50/` (16MiB 이하 조각 + `manifest.json`의 조각별·전체 SHA-256으로 검증, 추론 때 내려받지 않음) |
+| 코드 | `src/r50.py` (torchvision과 같은 층 이름으로 구조 정의, 전처리·검증), 내려받기 `tools/get_resnet50.py` |
+
 ## 제출 전 점검
 ```bash
 python tools/check_submission.py --input <경로>/validation/validation.csv --image_root <경로>/validation --model model.joblib

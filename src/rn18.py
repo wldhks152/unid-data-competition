@@ -123,6 +123,9 @@ def predict_proba(member, F, df, timg=None):
     if member.get("embedder") == "dino":  # DINOv2 이미지 특징 (src/dino.py)
         from . import dino
         emb = dino.embeddings(df, root, device=member.get("device", "auto"))
+    elif member.get("embedder") == "r50":  # ResNet50 이미지 특징 (src/r50.py)
+        from . import r50
+        emb = r50.embeddings(df, root, device=member.get("device", "auto"))
     else:
         emb = embeddings(df, root, device=member.get("device", "auto"))
     return np.mean([proba(m, df, timg, emb, F.sample_id.values) for m in member["models"]], axis=0)

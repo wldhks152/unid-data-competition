@@ -5,9 +5,11 @@ kind
           그 모듈의 predict_proba(member, F, df, timg) -> (n, 6) 확률(열 순서 1~6)을 호출한다.
   lgb  : LightGBM, 우리 피처(make_features), 5/10/15초 증강 행으로 학습
   cat  : CatBoost, 우리 피처, 5/10/15초 증강 행, 클래스 균형 가중
+  xgb  : XGBoost (GPU), 우리 피처, 5/10/15초 증강 행, 클래스 균형 가중
   team : 팀원 CatBoost v1 (원본 5초 행 + 팀원 피처 33개)
   rn18s: rn18 + 현재 행 센서 13개 (팀원 v2)
   dino : rn18s와 같되 이미지 특징을 DINOv2-small 384차원으로 (src/dino.py)
+  r50  : rn18s와 같되 이미지 특징을 ImageNet ResNet50 2048차원으로 (src/r50.py)
   s23  : 2↔3단계 전용 이진 LightGBM (2·3단계 행만 학습, P(3 | 2 또는 3)). OOF는 [0, 1-q, q, 0, 0, 0].
          블렌드 멤버가 아니라 bundle["refine23"]로 붙여, 블렌드의 2·3단계 확률 합을 q로 다시 나눈다.
   rn18 : 팀원 CatBoost v1 피처 33개 + ImageNet ResNet18 임베딩 512개 (src/rn18.py). 저장 시 custom 멤버가 된다.
@@ -33,6 +35,15 @@ def make_cat(seed, iterations=1500, depth=7, lr=0.05, gpu=False):
         allow_writing_files=False, verbose=False, **kw)
 
 
+def make_xgb(seed, gpu=True):
+    """XGBoost (GPU: device=cuda, tree_method=hist). 클래스 균형은 sample_weight로."""
+    from xgboost import XGBClassifier
+    return XGBClassifier(
+        n_estimators=800, learning_rate=0.03, max_depth=6, min_child_weight=5, subsample=0.8,
+        colsample_bytree=0.6, reg_lambda=1.0, tree_method="hist", device="cuda" if gpu else "cpu",
+        objective="multi:softprob", eval_metric="mlogloss", random_state=seed, n_jobs=os.cpu_count() or 4)
+
+
 def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=False, cat_iters=1500, emb=None,
                seed_variant=False):
     if kind == "lgb":
@@ -43,6 +54,12 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         m = make_cat(seed, iterations=cat_iters, gpu=gpu)
         m.fit(trn_F[feats].to_numpy(np.float32), trn_F["label"].to_numpy())
         return m
+    if kind == "xgb":  # 라벨 1..6 → 0..5
+        from sklearn.utils.class_weight import compute_sample_weight
+        y = trn_F["label"].to_numpy().astype(int) - 1
+        m = make_xgb(seed, gpu=gpu)
+        m.fit(trn_F[feats].to_numpy(np.float32), y, sample_weight=compute_sample_weight("balanced", y))
+        return m
     if kind == "team":
         return fit_team(trn_raw, timg)
     if kind == "s23":
@@ -50,7 +67,7 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         sel = trn_F["label"].isin([2, 3]).to_numpy()
         m.fit(trn_F.loc[sel, feats], (trn_F.loc[sel, "label"] == 3).astype(int))
         return m
-    if kind in ("rn18", "rn18s", "dino"):
+    if kind in ("rn18", "rn18s", "dino", "r50"):
         from . import rn18
         return rn18.fit(trn_raw, timg, emb, gpu=gpu, sensors=kind != "rn18", seed=seed if seed_variant else None)
     raise ValueError(kind)
@@ -67,6 +84,8 @@ def predict_member(kind, model, F=None, feats=None, raw=None, timg=None, emb=Non
         return _reorder(model.predict_proba(F[feats]), model.classes_)
     if kind == "cat":
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_)
+    if kind == "xgb":
+        return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_ + 1)
     if kind == "team":
         return team_proba(model, raw, timg, F.sample_id.values, list(CLASSES))
     if kind == "s23":
@@ -74,7 +93,7 @@ def predict_member(kind, model, F=None, feats=None, raw=None, timg=None, emb=Non
         P = np.zeros((len(F), len(CLASSES)))
         P[:, 1], P[:, 2] = 1 - q, q
         return P
-    if kind in ("rn18", "rn18s", "dino"):
+    if kind in ("rn18", "rn18s", "dino", "r50"):
         from . import rn18
         return rn18.proba(model, raw, timg, emb, F.sample_id.values)
     raise ValueError(kind)

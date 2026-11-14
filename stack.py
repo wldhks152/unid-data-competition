@@ -56,7 +56,7 @@ def main():
     tv = pd.concat([d[s] for s in a.splits], ignore_index=True)
     kinds = {m.split("_")[0] for m in a.members}
     timg = emb = None
-    if kinds & {"team", "rn18", "rn18s", "dino"}:
+    if kinds & {"team", "rn18", "rn18s", "dino", "r50"}:
         timg = pd.concat([team_image_features(d[s], os.path.dirname(find_csv(a.data_dir, s)),
                                               cache_dir=a.cache_dir, tag=s) for s in img_splits])
     if kinds & {"rn18", "rn18s"}:
@@ -70,6 +70,12 @@ def main():
         emb_dino = pd.concat([dino.embeddings(d[s], os.path.dirname(find_csv(a.data_dir, s)),
                                               cache_dir=a.cache_dir, tag=s, device="cpu" if a.cpu else "auto")
                               for s in img_splits])
+    if "r50" in kinds:
+        from src import r50
+        emb_dino = pd.concat([r50.embeddings(d[s], os.path.dirname(find_csv(a.data_dir, s)),
+                                             cache_dir=a.cache_dir, tag=s, device="cpu" if a.cpu else "auto")
+                              for s in img_splits])
+        assert "dino" not in kinds, "dino와 r50은 한 번에 하나씩 학습하세요"
     causality_check(tv)
 
     print("[2] 피처 생성 (5/10/15초 버전)")
@@ -99,7 +105,7 @@ def main():
         for fold, (tr_g, va_g) in enumerate(splits):
             t0 = time.time()
             m = fit_member(kind, a.seed + fold + seed_off, trn_F=F[F.grp.isin(tr_g)], feats=feats,
-                           trn_raw=tv[tv[KEY].isin(tr_g)], timg=timg, gpu=not a.cpu, cat_iters=a.cat_iters, emb=emb_dino if kind == "dino" else emb,
+                           trn_raw=tv[tv[KEY].isin(tr_g)], timg=timg, gpu=not a.cpu, cat_iters=a.cat_iters, emb=emb_dino if kind in ("dino", "r50") else emb,
                            seed_variant=seed_off > 0)
             models.append(m)
             msg = []
@@ -107,7 +113,7 @@ def main():
                 ver = f"k{k}o{o}"
                 v = F[F.grp.isin(va_g) & (F.ver == ver)]
                 rv = raw_ver[ver]
-                P = predict_member(kind, m, v, feats, rv[rv.grp.isin(va_g)], timg, emb_dino if kind == "dino" else emb)
+                P = predict_member(kind, m, v, feats, rv[rv.grp.isin(va_g)], timg, emb_dino if kind in ("dino", "r50") else emb)
                 dd = make_oof(P, v, ver, fold, extra_cols=GATE_COLS)
                 oof.append(dd)
                 msg.append(f"{5 * k}s {f1_score(dd.y, CLASSES[P.argmax(1)], average='macro'):.3f}")
@@ -115,13 +121,13 @@ def main():
         if a.holdout_valid:  # Train 전체로 학습 → Validation을 fold len(splits)로
             t0 = time.time()
             m = fit_member(kind, a.seed + 99 + seed_off, trn_F=F, feats=feats, trn_raw=tv, timg=timg,
-                           gpu=not a.cpu, cat_iters=a.cat_iters, emb=emb_dino if kind == "dino" else emb, seed_variant=seed_off > 0)
+                           gpu=not a.cpu, cat_iters=a.cat_iters, emb=emb_dino if kind in ("dino", "r50") else emb, seed_variant=seed_off > 0)
             models.append(m)
             msg = []
             for k, o in EVAL_VERSIONS:
                 ver = f"k{k}o{o}"
                 v = Fv[Fv.ver == ver]
-                P = predict_member(kind, m, v, feats, raw_v[ver], timg, emb_dino if kind == "dino" else emb)
+                P = predict_member(kind, m, v, feats, raw_v[ver], timg, emb_dino if kind in ("dino", "r50") else emb)
                 dd = make_oof(P, v, ver, len(splits), extra_cols=GATE_COLS)
                 oof.append(dd)
                 msg.append(f"{5 * k}s {f1_score(dd.y, CLASSES[P.argmax(1)], average='macro'):.3f}")
@@ -130,9 +136,9 @@ def main():
         write_oof(oof, os.path.join(a.out_dir, f"oof_{name}.csv"))
         if kind == "s23":
             mem = {"kind": "s23", "models": models, "feats": feats}
-        elif kind in ("rn18", "rn18s", "dino"):  # 추론은 custom 멤버로 (src/rn18.predict_proba)
+        elif kind in ("rn18", "rn18s", "dino", "r50"):  # 추론은 custom 멤버로 (src/rn18.predict_proba)
             mem = {"kind": "custom", "module": "src.rn18", "models": models, "feats": None, "device": "auto",
-                   "embedder": "dino" if kind == "dino" else "rn18"}
+                   "embedder": kind if kind in ("dino", "r50") else "rn18"}
         else:
             mem = {"kind": kind, "models": models, "feats": feats if kind != "team" else None}
         joblib.dump(mem, path, compress=3)

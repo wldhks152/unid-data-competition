@@ -12,6 +12,7 @@ data/
 weights/*
 !weights/encoder/
 !weights/dinov2-small/
+!weights/resnet50/
 checkpoints/
 
 # Python
