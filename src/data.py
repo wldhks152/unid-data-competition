@@ -1,5 +1,4 @@
 """데이터 로드 · 상수 · 다운샘플링."""
-import glob
 import os
 import sys
 
@@ -19,25 +18,40 @@ COND = ["bat_class", "bat_cc", "soc_status", "tr_method"]
 TRAIN_VERSIONS = [(1, 0), (2, 0), (2, 1), (3, 0), (3, 1), (3, 2)]
 EVAL_VERSIONS = [(1, 0), (2, 0), (3, 0)]
 
+# 파일명(소문자)에 포함되면 매칭. 앞쪽 키워드가 우선.
 PATTERNS = {
-    "train": "train*.csv",
-    "valid": "valid*.csv",
-    "test": "test*.csv",
-    "sub": "sample_submission*.csv",
+    "train": ["train"],
+    "valid": ["validation", "valid", "val"],
+    "test": ["test"],
+    "sub": ["sample_submission", "submission"],
 }
 
 
-def find_csv(root, pattern):
-    hits = sorted(glob.glob(os.path.join(root, "**", pattern), recursive=True))
-    if not hits:
-        sys.exit(f"[오류] {root} 아래에서 {pattern} 를 찾지 못했습니다.")
-    return hits[0]
+def _all_csvs(root):
+    out = []
+    for d, _, files in os.walk(root, followlinks=True):  # 심볼릭 링크도 따라감
+        out += [os.path.join(d, f) for f in files if f.lower().endswith(".csv")]
+    return sorted(out)
+
+
+def find_csv(root, split):
+    csvs = _all_csvs(root)
+    for kw in PATTERNS[split]:
+        hits = [p for p in csvs if kw in os.path.basename(p).lower()
+                and (split == "sub" or "submission" not in os.path.basename(p).lower())]
+        if hits:
+            return min(hits, key=len)
+    msg = [f"[오류] '{root}' 아래에서 {split} CSV를 찾지 못했습니다.",
+           f"  현재 작업 폴더: {os.getcwd()}",
+           f"  '{root}' 존재 여부: {os.path.exists(root)} (깨진 링크면 False)"]
+    msg.append(f"  발견된 CSV {len(csvs)}개: {csvs[:20]}" if csvs else "  CSV가 하나도 없습니다 → --data 경로를 확인하세요.")
+    sys.exit("\n".join(msg))
 
 
 def load(root, splits=("train", "valid", "test", "sub")):
     out = {}
     for s in splits:
-        p = find_csv(root, PATTERNS[s])
+        p = find_csv(root, s)
         print(f"  {s:6s} ← {p}")
         out[s] = pd.read_csv(p)
     return out
