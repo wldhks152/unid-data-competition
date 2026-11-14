@@ -6,6 +6,7 @@
   <멤버>.joblib    : {"kind", "models"(fold 5개), "feats"}
   folds.json       : fold별 검증 실험 (멤버끼리 같은 분할)
 이미 있는 멤버 파일은 건너뛴다(--force로 다시 학습). 다음 단계는 blend.py.
+rn18 멤버: ImageNet ResNet18(동결) 임베딩을 GPU로 뽑아 cache_dir/rn18_<split>.npz에 캐시한다 (행별 독립 계산).
 """
 import argparse
 import json
@@ -31,7 +32,7 @@ def main():
     ap.add_argument("--data_dir", required=True)
     ap.add_argument("--out_dir", default="runs/stack")
     ap.add_argument("--members", nargs="+", default=["lgb", "cat", "team"],
-                    help="lgb, cat, team. 시드 변형은 이름 뒤에 _s<번호> (예: lgb_s1)")
+                    help="lgb, cat, team, rn18. 시드 변형은 이름 뒤에 _s<번호> (예: lgb_s1)")
     ap.add_argument("--seed", type=int, default=42, help="모델 시드 (fold 분할은 src/evaluation.py에 고정)")
     ap.add_argument("--cat_iters", type=int, default=1500)
     ap.add_argument("--cache_dir", default="cache")
@@ -43,11 +44,16 @@ def main():
     print("[1] 데이터 로드 (Train + Validation)")
     d = load(a.data_dir, ("train", "valid"))
     tv = pd.concat([d["train"], d["valid"]], ignore_index=True)
-    need_team = any(m.split("_")[0] == "team" for m in a.members)
-    timg = None
-    if need_team:
+    kinds = {m.split("_")[0] for m in a.members}
+    timg = emb = None
+    if kinds & {"team", "rn18"}:
         timg = pd.concat([team_image_features(d[s], os.path.dirname(find_csv(a.data_dir, s)),
                                               cache_dir=a.cache_dir, tag=s) for s in ("train", "valid")])
+    if "rn18" in kinds:
+        from src import rn18
+        emb = pd.concat([rn18.embeddings(d[s], os.path.dirname(find_csv(a.data_dir, s)),
+                                         cache_dir=a.cache_dir, tag=s, device="cpu" if a.cpu else "auto")
+                         for s in ("train", "valid")])
     causality_check(tv)
 
     print("[2] 피처 생성 (5/10/15초 버전)")
@@ -72,21 +78,25 @@ def main():
         for fold, (tr_g, va_g) in enumerate(splits):
             t0 = time.time()
             m = fit_member(kind, a.seed + fold + seed_off, trn_F=F[F.grp.isin(tr_g)], feats=feats,
-                           trn_raw=tv[tv[KEY].isin(tr_g)], timg=timg, gpu=not a.cpu, cat_iters=a.cat_iters)
+                           trn_raw=tv[tv[KEY].isin(tr_g)], timg=timg, gpu=not a.cpu, cat_iters=a.cat_iters, emb=emb)
             models.append(m)
             msg = []
             for k, o in EVAL_VERSIONS:
                 ver = f"k{k}o{o}"
                 v = F[F.grp.isin(va_g) & (F.ver == ver)]
                 rv = raw_ver[ver]
-                P = predict_member(kind, m, v, feats, rv[rv.grp.isin(va_g)], timg)
+                P = predict_member(kind, m, v, feats, rv[rv.grp.isin(va_g)], timg, emb)
                 dd = make_oof(P, v, ver, fold, extra_cols=GATE_COLS)
                 oof.append(dd)
                 msg.append(f"{5 * k}s {f1_score(dd.y, CLASSES[P.argmax(1)], average='macro'):.3f}")
             print(f"  fold{fold}  " + "  ".join(msg) + f"  ({time.time() - t0:.0f}s)")
         oof = pd.concat(oof, ignore_index=True)
         write_oof(oof, os.path.join(a.out_dir, f"oof_{name}.csv"))
-        joblib.dump({"kind": kind, "models": models, "feats": feats if kind != "team" else None}, path, compress=3)
+        if kind == "rn18":  # 추론은 custom 멤버로 (src/rn18.predict_proba)
+            mem = {"kind": "custom", "module": "src.rn18", "models": models, "feats": None, "device": "auto"}
+        else:
+            mem = {"kind": kind, "models": models, "feats": feats if kind != "team" else None}
+        joblib.dump(mem, path, compress=3)
         m5 = oof.ver == "k1o0"
         print(f"  OOF raw Macro F1 (5s) {f1_score(oof.y[m5], CLASSES[oof.loc[m5, PCOLS].to_numpy().argmax(1)], average='macro'):.4f}"
               f"  → {path}")

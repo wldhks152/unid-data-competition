@@ -9,7 +9,8 @@ data/
 *.bin
 *.onnx
 *.h5
-weights/
+weights/*
+!weights/encoder/
 checkpoints/
 
 # Python

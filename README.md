@@ -83,4 +83,18 @@ python test.py --input <battery_data_light 경로>/test/test.csv \
 - **미래 시점 관측과 실험 전체 기준 통계(전체 평균, 종료 시각, 전체 행 수 등)는 사용하지 않습니다.**
 
 ## 사용한 사전학습 모델
-- 없음
+| 항목 | 내용 |
+|---|---|
+| 모델 | ResNet18, ImageNet-1K 사전학습 (torchvision `ResNet18_Weights.IMAGENET1K_V1`) |
+| 출처 | https://download.pytorch.org/models/resnet18-f37072fd.pth (torchvision 공식 배포, 대회 시작 전 공개) |
+| 버전 | torchvision `IMAGENET1K_V1` 가중치, 파일 SHA-256 `f37072fd47e89c5e827621c5baffa7500819f7896bbacec160b1a16c560e07ec` |
+| 라이선스 | 모델 구조 코드: torchvision BSD-3-Clause (`third_party/LICENSE.torchvision`). 가중치: torchvision 배포 조건을 따름 |
+| 사용 방식 | 가중치를 **동결**하고 fc 층을 뺀 512차원 평균풀링 특징만 사용 (대회 데이터로 미세조정하지 않음). 이미지마다 독립 계산 |
+| 저장 위치 | `weights/encoder/` (16MiB 이하 조각 3개 + `manifest.json`의 해시로 검증, 추론 때 내려받지 않음) |
+| 코드 | `src/rn18_encoder.py` (전처리·검증), `src/rn18.py` (스태킹 멤버: 팀원 CatBoost 피처 33개 + 임베딩 512개) |
+
+## 제출 전 점검
+```bash
+python tools/check_submission.py --input <경로>/validation/validation.csv --image_root <경로>/validation --model model.joblib
+```
+행 셔플, 실험 단위 분할, 뒷부분 삭제 조건에서 예측이 같은지, 빈 이미지로 바꾸면 예측이 달라지는지(이미지 사용 확인) 검사해요. 집계값만 출력해요.
