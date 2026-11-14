@@ -1,0 +1,30 @@
+# 대회 데이터 (절대 커밋 금지)
+data/
+
+# 모델 가중치 (100MB 초과 파일은 GitHub에 올라가지 않음 → 드라이브 링크를 README에)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+*.h5
+weights/
+checkpoints/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# 환경/비밀
+.env
+*.key
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
