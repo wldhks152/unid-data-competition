@@ -56,10 +56,10 @@ def main():
     tv = pd.concat([d[s] for s in a.splits], ignore_index=True)
     kinds = {m.split("_")[0] for m in a.members}
     timg = emb = None
-    if kinds & {"team", "rn18", "rn18s", "dino", "r50", "dinod", "dinodf"}:
+    if kinds & {"team", "rn18", "rn18s", "rn18d", "dino", "r50", "dinod", "dinodf"}:
         timg = pd.concat([team_image_features(d[s], os.path.dirname(find_csv(a.data_dir, s)),
                                               cache_dir=a.cache_dir, tag=s) for s in img_splits])
-    if kinds & {"rn18", "rn18s"}:
+    if kinds & {"rn18", "rn18s", "rn18d"}:
         from src import rn18
         emb = pd.concat([rn18.embeddings(d[s], os.path.dirname(find_csv(a.data_dir, s)),
                                          cache_dir=a.cache_dir, tag=s, device="cpu" if a.cpu else "auto")
@@ -143,7 +143,7 @@ def main():
         write_oof(oof, os.path.join(a.out_dir, f"oof_{name}.csv"))
         if kind == "s23":
             mem = {"kind": "s23", "models": models, "feats": feats_k}
-        elif kind in ("rn18", "rn18s", "dino", "r50", "dinod", "dinodf"):  # 추론은 custom 멤버로 (src/rn18.predict_proba)
+        elif kind in ("rn18", "rn18s", "rn18d", "dino", "r50", "dinod", "dinodf"):  # 추론은 custom 멤버로 (src/rn18.predict_proba)
             mem = {"kind": "custom", "module": "src.rn18", "models": models, "feats": None, "device": "auto",
                    "embedder": "dino" if kind.startswith("dino") else ("r50" if kind == "r50" else "rn18")}
         else:
