@@ -82,32 +82,101 @@ def embeddings(df, image_root, cache_dir=None, tag=None, device="auto"):
     return out
 
 
-def build_X(frame, timg, emb, sensors=False):
-    """sensors=False: v1 (33 + 512), True: v2 (33 + 512 + 현재 센서 13)."""
+DYN_WINDOWS = (15.0, 30.0, 60.0, 120.0)  # 초 단위 과거 창 (행 수가 아님 → 5/10/15초 간격에서 같은 의미)
+DYN_COLS = (["dyn_first"] + [f"dyn_w{int(w)}" for w in DYN_WINDOWS] + ["dyn_rate15", "dyn_rate30", "dyn_base", "dyn_novel",
+            "dyn_first_cmax", "dyn_w30_cmax", "dyn_novel_cmax", "dyn_t_since_w30_peak", "dyn_norm_d0"])
+
+
+def emb_dynamics(frame, E, delta=False):
+    """이미지 임베딩의 '시간 변화' 피처 — 같은 실험의 현재·과거 프레임만 쓴다 (미래 정보 없음).
+    2→3 전환은 센서 임계값 규칙이 없어서(일치율 최고 33%), 화면 자체가 바뀌는 순간(연기·벤팅 등)을 잡으려는 것.
+      dyn_first : 첫 프레임과의 코사인 거리          dyn_w{15,30,60,120}: w초 전 프레임과의 코사인 거리
+      dyn_rate  : 그 거리 / 실제 시간차              dyn_base : 처음 60초 평균 프레임과의 거리
+      dyn_novel : 15초 이상 지난 과거 프레임 중 가장 비슷한 것과의 거리 (처음 보는 화면일수록 큼)
+      *_cmax    : 지금까지의 최댓값                  dyn_t_since_w30_peak: 30초 변화가 가장 컸던 때부터 경과초
+    행별 내적은 einsum으로 행마다 따로 계산 → 뒤 행을 지우거나 행 순서를 섞어도 같은 값.
+    delta=True면 (현재 임베딩 − 첫 프레임 임베딩) 전체도 함께 반환."""
+    from .data import KEY, T
+    E = np.asarray(E, np.float64)
+    n = len(frame)
+    U = E / np.maximum(np.sqrt(np.einsum("ij,ij->i", E, E)), 1e-12)[:, None]
+    nrm = np.sqrt(np.einsum("ij,ij->i", E, E))
+    out = {c: np.full(n, np.nan) for c in DYN_COLS}
+    D = np.zeros_like(E) if delta else None
+    t_all = pd.to_numeric(frame[T], errors="coerce").to_numpy(float)
+    dist = lambda A, B: 1.0 - np.einsum("ij,ij->i", A, B)
+    for idx in frame.groupby(KEY, sort=False).indices.values():
+        idx = np.asarray(idx)
+        o = idx[np.argsort(t_all[idx], kind="stable")]
+        t, X, m = t_all[o], U[o], len(o)
+        c = {"dyn_first": dist(X, np.repeat(X[:1], m, axis=0)), "dyn_norm_d0": nrm[o] - nrm[o][0]}
+        for w in DYN_WINDOWS:
+            j = np.searchsorted(t, t - w, side="left")
+            dt = t - t[j]
+            d = np.where(dt > 0, dist(X, X[j]), np.nan)
+            c[f"dyn_w{int(w)}"] = d
+            if w in (15.0, 30.0):
+                c[f"dyn_rate{int(w)}"] = d / np.where(dt > 0, dt, np.nan)
+        inb = t <= t[0] + 60.0
+        mu = np.cumsum(np.where(inb[:, None], X, 0.0), axis=0) / np.cumsum(inb)[:, None]
+        mu = mu / np.maximum(np.sqrt(np.einsum("ij,ij->i", mu, mu)), 1e-12)[:, None]
+        c["dyn_base"] = dist(X, mu)
+        nov = np.full(m, np.nan)
+        jmax = np.searchsorted(t, t - 15.0, side="right")  # 15초 이상 지난 프레임 수
+        for s in range(0, m, 512):
+            e = min(m, s + 512)
+            S = np.einsum("id,jd->ij", X[s:e], X[:jmax[e - 1]]) if jmax[e - 1] > 0 else np.zeros((e - s, 0))
+            S = np.where(np.arange(S.shape[1])[None, :] < jmax[s:e, None], S, -np.inf)
+            if S.shape[1]:
+                best = S.max(1)
+                nov[s:e] = np.where(jmax[s:e] > 0, 1.0 - best, np.nan)
+        c["dyn_novel"] = nov
+        with np.errstate(invalid="ignore"):
+            for a in ("dyn_first", "dyn_w30", "dyn_novel"):
+                c[a + "_cmax"] = np.fmax.accumulate(c[a])
+            d30 = c["dyn_w30"]
+            is_new = d30 >= c["dyn_w30_cmax"]
+        last = np.maximum.accumulate(np.where(is_new, np.arange(m), 0))
+        c["dyn_t_since_w30_peak"] = np.where(np.isnan(c["dyn_w30_cmax"]), np.nan, t - t[last])
+        for k, v in c.items():
+            out[k][o] = v
+        if delta:
+            D[o] = E[o] - E[o][0]
+    res = pd.DataFrame(out, columns=DYN_COLS).astype(np.float32)
+    if delta:
+        res = pd.concat([res, pd.DataFrame(D.astype(np.float32), columns=[f"dd_{i:03d}" for i in range(E.shape[1])])], axis=1)
+    return res
+
+
+def build_X(frame, timg, emb, sensors=False, dyn=0):
+    """sensors=False: v1 (33 + 512), True: v2 (33 + 512 + 현재 센서 13).
+    dyn=1: + 이미지 임베딩 시간 변화 피처(emb_dynamics), dyn=2: + 첫 프레임 대비 임베딩 차이 전체."""
     base = TM.build_features(frame, timg)
     E = emb.reindex(frame["sample_id"].values)
     assert E.notna().all(axis=1).all(), "이미지 임베딩이 없는 샘플이 있습니다."
     parts = [base.reset_index(drop=True), pd.DataFrame(E.to_numpy(np.float32), columns=list(emb.columns))]
     if sensors:
         parts.append(TM.numeric(frame, ADDED_SENSORS).reset_index(drop=True))
+    if dyn:
+        parts.append(emb_dynamics(frame.reset_index(drop=True), E.to_numpy(np.float32), delta=dyn >= 2))
     return pd.concat(parts, axis=1)
 
 
-def fit(raw, timg, emb, thread_count=None, gpu=True, sensors=False, seed=None):
+def fit(raw, timg, emb, thread_count=None, gpu=True, sensors=False, seed=None, dyn=0):
     """팀원 CatBoost v1 설정 그대로, gpu=True면 CatBoost를 GPU로 학습한다 (545개 특징이라 CPU는 느림)."""
-    X = build_X(raw, timg, emb, sensors)
+    X = build_X(raw, timg, emb, sensors, dyn)
     pipe = TM.build_model(thread_count=thread_count or os.cpu_count() or 4)
     if gpu and "classifier" in pipe.named_steps and type(pipe.named_steps["classifier"]).__name__ == "CatBoostClassifier":
         pipe.set_params(classifier__task_type="GPU", classifier__devices="0")
     if seed is not None and "classifier" in pipe.named_steps and type(pipe.named_steps["classifier"]).__name__ == "CatBoostClassifier":
         pipe.set_params(classifier__random_seed=int(seed))  # 시드 변형(_s1, _s2 …)용. None이면 팀원 설정(42) 그대로
     pipe.fit(X, raw["label"].astype(int).to_numpy())
-    return {"features": list(X.columns), "pipeline": pipe, "sensors": sensors}
+    return {"features": list(X.columns), "pipeline": pipe, "sensors": sensors, "dyn": dyn}
 
 
 def proba(model, raw, timg, emb, sample_ids):
     frame = raw.set_index("sample_id").loc[list(sample_ids)].reset_index()
-    X = build_X(frame, timg, emb, model.get("sensors", False))[model["features"]]
+    X = build_X(frame, timg, emb, model.get("sensors", False), model.get("dyn", 0))[model["features"]]
     P = model["pipeline"].predict_proba(X)
     tc = [int(c) for c in model["pipeline"].classes_]
     return P[:, [tc.index(int(c)) for c in CLASSES]]
