@@ -86,8 +86,8 @@ def build_X(frame, timg, emb, sensors=False):
     """sensors=False: v1 (33 + 512), True: v2 (33 + 512 + 현재 센서 13)."""
     base = TM.build_features(frame, timg)
     E = emb.reindex(frame["sample_id"].values)
-    assert E.notna().all(axis=1).all(), "ResNet18 특징이 없는 샘플이 있습니다."
-    parts = [base.reset_index(drop=True), pd.DataFrame(E.to_numpy(np.float32), columns=EMB_COLS)]
+    assert E.notna().all(axis=1).all(), "이미지 임베딩이 없는 샘플이 있습니다."
+    parts = [base.reset_index(drop=True), pd.DataFrame(E.to_numpy(np.float32), columns=list(emb.columns))]
     if sensors:
         parts.append(TM.numeric(frame, ADDED_SENSORS).reset_index(drop=True))
     return pd.concat(parts, axis=1)
@@ -120,5 +120,9 @@ def predict_proba(member, F, df, timg=None):
     if timg is None:
         from .ensemble import team_image_features
         timg = team_image_features(df, root)
-    emb = embeddings(df, root, device=member.get("device", "auto"))
+    if member.get("embedder") == "dino":  # DINOv2 이미지 특징 (src/dino.py)
+        from . import dino
+        emb = dino.embeddings(df, root, device=member.get("device", "auto"))
+    else:
+        emb = embeddings(df, root, device=member.get("device", "auto"))
     return np.mean([proba(m, df, timg, emb, F.sample_id.values) for m in member["models"]], axis=0)

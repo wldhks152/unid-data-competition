@@ -7,6 +7,7 @@ kind
   cat  : CatBoost, 우리 피처, 5/10/15초 증강 행, 클래스 균형 가중
   team : 팀원 CatBoost v1 (원본 5초 행 + 팀원 피처 33개)
   rn18s: rn18 + 현재 행 센서 13개 (팀원 v2)
+  dino : rn18s와 같되 이미지 특징을 DINOv2-small 384차원으로 (src/dino.py)
   s23  : 2↔3단계 전용 이진 LightGBM (2·3단계 행만 학습, P(3 | 2 또는 3)). OOF는 [0, 1-q, q, 0, 0, 0].
          블렌드 멤버가 아니라 bundle["refine23"]로 붙여, 블렌드의 2·3단계 확률 합을 q로 다시 나눈다.
   rn18 : 팀원 CatBoost v1 피처 33개 + ImageNet ResNet18 임베딩 512개 (src/rn18.py). 저장 시 custom 멤버가 된다.
@@ -49,9 +50,9 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         sel = trn_F["label"].isin([2, 3]).to_numpy()
         m.fit(trn_F.loc[sel, feats], (trn_F.loc[sel, "label"] == 3).astype(int))
         return m
-    if kind in ("rn18", "rn18s"):
+    if kind in ("rn18", "rn18s", "dino"):
         from . import rn18
-        return rn18.fit(trn_raw, timg, emb, gpu=gpu, sensors=kind == "rn18s", seed=seed if seed_variant else None)
+        return rn18.fit(trn_raw, timg, emb, gpu=gpu, sensors=kind != "rn18", seed=seed if seed_variant else None)
     raise ValueError(kind)
 
 
@@ -73,7 +74,7 @@ def predict_member(kind, model, F=None, feats=None, raw=None, timg=None, emb=Non
         P = np.zeros((len(F), len(CLASSES)))
         P[:, 1], P[:, 2] = 1 - q, q
         return P
-    if kind in ("rn18", "rn18s"):
+    if kind in ("rn18", "rn18s", "dino"):
         from . import rn18
         return rn18.proba(model, raw, timg, emb, F.sample_id.values)
     raise ValueError(kind)

@@ -93,6 +93,16 @@ python test.py --input <battery_data_light 경로>/test/test.csv \
 | 저장 위치 | `weights/encoder/` (16MiB 이하 조각 3개 + `manifest.json`의 해시로 검증, 추론 때 내려받지 않음) |
 | 코드 | `src/rn18_encoder.py` (전처리·검증), `src/rn18.py` (스태킹 멤버: 팀원 CatBoost 피처 33개 + 임베딩 512개) |
 
+### DINOv2-small (실험 중, 최종 채택 시 기재 유지)
+| 항목 | 내용 |
+|---|---|
+| 모델 | DINOv2 ViT-S/14 (`facebook/dinov2-small`, Meta AI) |
+| 출처 | https://huggingface.co/facebook/dinov2-small (대회 시작 전 공개) |
+| 버전 | `weights/dinov2-small/manifest.json`의 revision(커밋 해시)과 SHA-256 |
+| 라이선스 | Apache-2.0 |
+| 사용 방식 | 가중치 **동결**, pooler 출력 384차원만 특징으로 사용 (미세조정 없음). 이미지마다 독립 계산 |
+| 코드 | `src/dino.py`, 내려받기 `tools/get_dinov2.py` (학습 전 1회, 추론 때는 내려받지 않음) |
+
 ## 제출 전 점검
 ```bash
 python tools/check_submission.py --input <경로>/validation/validation.csv --image_root <경로>/validation --model model.joblib
