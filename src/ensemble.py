@@ -53,6 +53,6 @@ def blend_proba(bundle, F, df=None, img=None):
     team = bundle.get("team")
     if team is None:
         return P
-    a = float(bundle.get("alpha", 0.5))
+    a = np.asarray(bundle.get("alpha", 0.5), dtype=float)  # 스칼라 또는 클래스별 벡터
     Pt = team_proba(team, df, img, F.sample_id.values, list(bundle["classes"]))
     return a * P + (1 - a) * Pt

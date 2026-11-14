@@ -60,6 +60,9 @@ def main():
     ap.add_argument("--post", choices=["none", "cummax"], default=None, help="후처리 덮어쓰기")
     ap.add_argument("--use_w", type=int, choices=[0, 1], default=None, help="클래스 배율 w 사용 여부 덮어쓰기")
     ap.add_argument("--gate", choices=["none", "12", "1234"], default=None, help="단계 전환 규칙 게이트 (src/model.py rule_gate)")
+    ap.add_argument("--alpha_split", type=float, nargs=2, default=None, metavar=("LO", "HI"),
+                    help="클래스별 LightGBM 비율: 1~3단계 LO, 4~6단계 HI")
+    ap.add_argument("--w", type=float, nargs="+", default=None, help="클래스 배율 직접 지정 (6개)")
     ap.add_argument("--w_power", type=float, default=None, help="클래스 배율을 w**p로 완화 (0=배율 없음, 1=그대로)")
     a = ap.parse_args()
 
@@ -71,6 +74,15 @@ def main():
         bundle["post"]["use_w"] = bool(a.use_w)
     if a.gate is not None:
         bundle["post"]["gate"] = a.gate
+    if a.alpha_split is not None:
+        if "team" not in bundle:
+            sys.exit("[오류] CatBoost가 없는 model.joblib입니다.")
+        lo, hi = a.alpha_split
+        bundle["alpha"] = np.array([lo if c <= 3 else hi for c in bundle["classes"]], dtype=float)
+    if a.w is not None:
+        assert len(a.w) == len(bundle["classes"]), "--w는 클래스 수만큼"
+        bundle["w"] = np.asarray(a.w, dtype=float)
+        bundle["post"]["use_w"] = True
     if a.w_power is not None:
         bundle["w"] = np.asarray(bundle["w"], dtype=float) ** a.w_power
         print(f"  w → w**{a.w_power}: {np.round(bundle['w'], 2).tolist()}")
@@ -81,7 +93,7 @@ def main():
             bundle["alpha"] = a.alpha
         elif a.alpha < 1:
             sys.exit("[오류] 이 model.joblib에는 CatBoost가 없어 --alpha < 1을 쓸 수 없습니다.")
-    ens = f"앙상블(LightGBM {bundle['alpha']:.2f} + CatBoost {1 - bundle['alpha']:.2f})" if "team" in bundle else "LightGBM 단독"
+    ens = f"앙상블(LightGBM 비율 {np.round(bundle['alpha'], 2).tolist()})" if "team" in bundle else "LightGBM 단독"
     print(f"  모델: {a.model}  {ens}, 후처리={bundle['post']['method']}, w={bundle['post']['use_w']}, "
           f"gate={bundle['post'].get('gate', 'none')}, "
           f"이미지={bundle.get('use_images', False)}")
