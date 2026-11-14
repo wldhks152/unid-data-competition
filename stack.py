@@ -38,6 +38,8 @@ def main():
     ap.add_argument("--cache_dir", default="cache")
     ap.add_argument("--cpu", action="store_true", help="CPU로 학습 (기본: GPU — LightGBM은 설치 빌드가 지원할 때, CatBoost·ResNet18은 항상)")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--splits", nargs="+", default=["train", "valid"], choices=["train", "valid"],
+                    help="학습에 쓸 split (예: --splits train → Validation 제외, fold도 Train 실험으로만 나눔)")
     a = ap.parse_args()
     if a.cpu:
         from src.model import DEVICE
@@ -45,18 +47,18 @@ def main():
     os.makedirs(a.out_dir, exist_ok=True)
 
     print("[1] 데이터 로드 (Train + Validation)")
-    d = load(a.data_dir, ("train", "valid"))
-    tv = pd.concat([d["train"], d["valid"]], ignore_index=True)
+    d = load(a.data_dir, tuple(a.splits))
+    tv = pd.concat([d[s] for s in a.splits], ignore_index=True)
     kinds = {m.split("_")[0] for m in a.members}
     timg = emb = None
     if kinds & {"team", "rn18"}:
         timg = pd.concat([team_image_features(d[s], os.path.dirname(find_csv(a.data_dir, s)),
-                                              cache_dir=a.cache_dir, tag=s) for s in ("train", "valid")])
+                                              cache_dir=a.cache_dir, tag=s) for s in a.splits])
     if "rn18" in kinds:
         from src import rn18
         emb = pd.concat([rn18.embeddings(d[s], os.path.dirname(find_csv(a.data_dir, s)),
                                          cache_dir=a.cache_dir, tag=s, device="cpu" if a.cpu else "auto")
-                         for s in ("train", "valid")])
+                         for s in a.splits])
     causality_check(tv)
 
     print("[2] 피처 생성 (5/10/15초 버전)")
