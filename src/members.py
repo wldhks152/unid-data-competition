@@ -4,6 +4,7 @@ kind
   custom: 다른 브랜치 모델. joblib에 {"kind": "custom", "module": "src.xxx", ...}을 두고,
           그 모듈의 predict_proba(member, F, df, timg) -> (n, 6) 확률(열 순서 1~6)을 호출한다.
   lgb  : LightGBM, 우리 피처(make_features), 5/10/15초 증강 행으로 학습
+  lgbf : lgb + 짧은 창 피처(f_: 직전 관측 대비·15초 변화율, 급한 3→4·4→5 전환용)
   lgbx : lgb와 같되 추가 피처(src/features.py _extra_feats, x_ 접두사)까지 사용
   cat  : CatBoost, 우리 피처, 5/10/15초 증강 행, 클래스 균형 가중
   ord  : 순서형 LightGBM ("단계 ≥ k" 이진 5개 → 단조 보정 → 6클래스), 우리 피처
@@ -173,7 +174,7 @@ def make_xgb(seed, gpu=True):
 
 def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=False, cat_iters=1500, emb=None,
                seed_variant=False):
-    if kind in ("lgb", "lgbx"):  # lgbx: 추가 피처(x_)까지 쓰는 LightGBM
+    if kind in ("lgb", "lgbx", "lgbf"):  # lgbx/lgbf: 추가 피처(x_/f_)까지 쓰는 LightGBM
         m = make_model(seed)
         m.fit(trn_F[feats], trn_F["label"])
         return m
@@ -213,7 +214,7 @@ def _reorder(P, classes):
 
 def predict_member(kind, model, F=None, feats=None, raw=None, timg=None, emb=None):
     """F 행 순서대로 (n, 6) 확률. team은 raw(F와 같은 sample_id를 가진 원본 행)와 이미지 통계가 필요."""
-    if kind in ("lgb", "lgbx"):
+    if kind in ("lgb", "lgbx", "lgbf"):
         return _reorder(model.predict_proba(F[feats]), model.classes_)
     if kind == "cat":
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_)

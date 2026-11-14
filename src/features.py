@@ -157,6 +157,27 @@ def _extra_feats(t, g):
     return out
 
 
+F_SENS = ["meas_t1", "meas_t2", "meas_v", "meas_p", "thermal_t", "indu_t"]
+
+
+def _fast_feats(t, g):
+    """짧은 창 피처(f_ 접두사, lgbf 멤버만 사용). 39Ah 셀처럼 4·5단계가 수십 초밖에 안 되는 실험에서
+    30초 이상 창의 기울기는 급변을 늦게 잡는다. 직전 관측 대비 변화율과 15초 기울기를 더한다. 과거 행만 사용."""
+    out = {}
+    n = len(t)
+    jp = np.r_[0, np.arange(n - 1)]  # 직전 관측
+    j15 = np.searchsorted(t, t - 15, side="left")
+    for c in F_SENS:
+        if c not in g.columns:
+            continue
+        x = g[c].to_numpy(float)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            for name, j in [("rate_last", jp), ("rate15", j15)]:
+                dt = t - t[j]
+                out[f"f_{c}__{name}"] = np.where(dt > 0, (x - x[j]) / np.where(dt > 0, dt, 1), np.nan)
+    return out
+
+
 def make_features(df):
     """(실험, 시간) 순으로 정렬된 피처 DataFrame을 반환. sample_id로 원래 행과 매칭."""
     df = df.sort_values([KEY, T], kind="stable").reset_index(drop=True)
@@ -178,6 +199,7 @@ def make_features(df):
         cols["t1_minus_amb"] = g["meas_t1"].to_numpy(float) - g["atmp_t"].to_numpy(float)
         cols.update(_event_feats(t, g))
         cols.update(_extra_feats(t, g))
+        cols.update(_fast_feats(t, g))
         if imgs:
             I = g[imgs].to_numpy(float)
             for a, c in enumerate(imgs):
