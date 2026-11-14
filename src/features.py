@@ -102,6 +102,61 @@ def _event_feats(t, g):
     return out
 
 
+X_IMG = ["img_pt_max", "img_pt_p99", "img_pt_p90", "img_pt_mean", "img_frac_red", "img_frac_white", "img_frac_yellow"]
+X_VOL = ["meas_p", "meas_t1", "meas_t2", "meas_v", "thermal_t"]
+
+
+def _extra_feats(t, g):
+    """추가 피처(x_ 접두사, lgbx 멤버만 사용). 모두 현재·과거 행만 사용.
+    1) 이미지 동역학: 이미지 통계의 30/60/120초 기울기, 누적 최대, 최대 대비 하락, 최대 갱신 후 경과시간
+    2) 변동성: 최근 30/60초 표준편차 (벤팅 직후 압력·온도 요동 vs 3단계의 꾸준한 승온 구분)
+    3) 전압-온도 결합: 60초 dV/dt ÷ dT1/dt, 시작 대비 전압 변화 ÷ 온도 변화"""
+    out = {}
+    n = len(t)
+    idx = np.arange(n)
+    imgs = [c for c in X_IMG if c in g.columns]
+    if imgs:
+        I = g[imgs].to_numpy(float)
+        F = _group_feats(t, I)
+        P = _peak_feats(t, I)
+        for a, c in enumerate(imgs):
+            for w in WINDOWS:
+                out[f"x_img__{c}__rate{w}"] = F[f"rate{w}"][:, a]
+            out[f"x_img__{c}__cmax"] = F["cmax"][:, a]
+            out[f"x_img__{c}__drop_from_max"] = F["drop_from_max"][:, a]
+            out[f"x_img__{c}__t_since_peak"] = P[:, a]
+        if "img_pt_max" in imgs and "meas_t1" in g.columns:
+            t1 = g["meas_t1"].to_numpy(float)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                out["x_img__ptmax_d0_per_t1_d0"] = (I[:, imgs.index("img_pt_max")] - I[0, imgs.index("img_pt_max")]) / (np.abs(t1 - t1[0]) + 1.0)
+    vol = [c for c in X_VOL if c in g.columns]
+    if vol:
+        X = g[vol].to_numpy(float)
+        Xz = np.where(np.isnan(X), 0.0, X)
+        valid = (~np.isnan(X)).astype(float)
+        cs = np.vstack([np.zeros((1, len(vol))), np.cumsum(Xz, 0)])
+        cs2 = np.vstack([np.zeros((1, len(vol))), np.cumsum(Xz ** 2, 0)])
+        cn = np.vstack([np.zeros((1, len(vol))), np.cumsum(valid, 0)])
+        for w in (30, 60):
+            j = np.searchsorted(t, t - w, side="left")
+            with np.errstate(invalid="ignore", divide="ignore"):
+                m = (cs[idx + 1] - cs[j]) / (cn[idx + 1] - cn[j])
+                v2 = (cs2[idx + 1] - cs2[j]) / (cn[idx + 1] - cn[j]) - m ** 2
+            sd = np.sqrt(np.clip(v2, 0, None))
+            for a, c in enumerate(vol):
+                out[f"x_vol__{c}__std{w}"] = sd[:, a]
+    if "meas_v" in g.columns and "meas_t1" in g.columns:
+        v, t1 = g["meas_v"].to_numpy(float), g["meas_t1"].to_numpy(float)
+        j = np.searchsorted(t, t - 60, side="left")
+        dt = t - t[j]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            rv = np.where(dt > 0, (v - v[j]) / np.where(dt > 0, dt, 1), np.nan)
+            rt = np.where(dt > 0, (t1 - t1[j]) / np.where(dt > 0, dt, 1), np.nan)
+            out["x_vt__dv_per_dt1_60"] = np.clip(rv / (np.abs(rt) + 0.01), -50, 50)
+            out["x_vt__v_d0_per_t1_d0"] = (v - v[0]) / (np.abs(t1 - t1[0]) + 1.0)
+    return out
+
+
 def make_features(df):
     """(실험, 시간) 순으로 정렬된 피처 DataFrame을 반환. sample_id로 원래 행과 매칭."""
     df = df.sort_values([KEY, T], kind="stable").reset_index(drop=True)
@@ -122,6 +177,7 @@ def make_features(df):
         cols["t1_minus_t2"] = g["meas_t1"].to_numpy(float) - g["meas_t2"].to_numpy(float)
         cols["t1_minus_amb"] = g["meas_t1"].to_numpy(float) - g["atmp_t"].to_numpy(float)
         cols.update(_event_feats(t, g))
+        cols.update(_extra_feats(t, g))
         if imgs:
             I = g[imgs].to_numpy(float)
             for a, c in enumerate(imgs):

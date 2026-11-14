@@ -81,7 +81,9 @@ def main():
     print("[2] 피처 생성 (5/10/15초 버전)")
     t0 = time.time()
     F = pd.concat([make_features(subsample(tv, k, o)) for k, o in TRAIN_VERSIONS], ignore_index=True)
-    feats = [c for c in feature_columns(F) if F[c].nunique(dropna=True) > 1]
+    feats_all = [c for c in feature_columns(F) if F[c].nunique(dropna=True) > 1]
+    feats = [c for c in feats_all if not c.startswith("x_")]  # 기존 멤버는 추가 피처 없이 (이전 결과와 같게)
+    print(f"  추가 피처(x_) {len(feats_all) - len(feats)}개 — lgbx 멤버만 사용")
     raw_ver = {f"k{k}o{o}": subsample(tv, k, o) for k, o in EVAL_VERSIONS}
     print(f"  {len(F):,} rows × {len(feats)} features ({time.time() - t0:.0f}s)")
 
@@ -95,6 +97,7 @@ def main():
 
     for name in a.members:
         kind = name.split("_")[0]
+        feats_k = feats_all if kind == "lgbx" else feats
         seed_off = int(name.split("_s")[1]) * 100 if "_s" in name else 0
         path = os.path.join(a.out_dir, f"{name}.joblib")
         if os.path.exists(path) and not a.force:
@@ -104,7 +107,7 @@ def main():
         models, oof = [], []
         for fold, (tr_g, va_g) in enumerate(splits):
             t0 = time.time()
-            m = fit_member(kind, a.seed + fold + seed_off, trn_F=F[F.grp.isin(tr_g)], feats=feats,
+            m = fit_member(kind, a.seed + fold + seed_off, trn_F=F[F.grp.isin(tr_g)], feats=feats_k,
                            trn_raw=tv[tv[KEY].isin(tr_g)], timg=timg, gpu=not a.cpu, cat_iters=a.cat_iters, emb=emb_dino if kind in ("dino", "r50") else emb,
                            seed_variant=seed_off > 0)
             models.append(m)
@@ -113,21 +116,21 @@ def main():
                 ver = f"k{k}o{o}"
                 v = F[F.grp.isin(va_g) & (F.ver == ver)]
                 rv = raw_ver[ver]
-                P = predict_member(kind, m, v, feats, rv[rv.grp.isin(va_g)], timg, emb_dino if kind in ("dino", "r50") else emb)
+                P = predict_member(kind, m, v, feats_k, rv[rv.grp.isin(va_g)], timg, emb_dino if kind in ("dino", "r50") else emb)
                 dd = make_oof(P, v, ver, fold, extra_cols=GATE_COLS)
                 oof.append(dd)
                 msg.append(f"{5 * k}s {f1_score(dd.y, CLASSES[P.argmax(1)], average='macro'):.3f}")
             print(f"  fold{fold}  " + "  ".join(msg) + f"  ({time.time() - t0:.0f}s)")
         if a.holdout_valid:  # Train 전체로 학습 → Validation을 fold len(splits)로
             t0 = time.time()
-            m = fit_member(kind, a.seed + 99 + seed_off, trn_F=F, feats=feats, trn_raw=tv, timg=timg,
+            m = fit_member(kind, a.seed + 99 + seed_off, trn_F=F, feats=feats_k, trn_raw=tv, timg=timg,
                            gpu=not a.cpu, cat_iters=a.cat_iters, emb=emb_dino if kind in ("dino", "r50") else emb, seed_variant=seed_off > 0)
             models.append(m)
             msg = []
             for k, o in EVAL_VERSIONS:
                 ver = f"k{k}o{o}"
                 v = Fv[Fv.ver == ver]
-                P = predict_member(kind, m, v, feats, raw_v[ver], timg, emb_dino if kind in ("dino", "r50") else emb)
+                P = predict_member(kind, m, v, feats_k, raw_v[ver], timg, emb_dino if kind in ("dino", "r50") else emb)
                 dd = make_oof(P, v, ver, len(splits), extra_cols=GATE_COLS)
                 oof.append(dd)
                 msg.append(f"{5 * k}s {f1_score(dd.y, CLASSES[P.argmax(1)], average='macro'):.3f}")
@@ -135,12 +138,12 @@ def main():
         oof = pd.concat(oof, ignore_index=True)
         write_oof(oof, os.path.join(a.out_dir, f"oof_{name}.csv"))
         if kind == "s23":
-            mem = {"kind": "s23", "models": models, "feats": feats}
+            mem = {"kind": "s23", "models": models, "feats": feats_k}
         elif kind in ("rn18", "rn18s", "dino", "r50"):  # 추론은 custom 멤버로 (src/rn18.predict_proba)
             mem = {"kind": "custom", "module": "src.rn18", "models": models, "feats": None, "device": "auto",
                    "embedder": kind if kind in ("dino", "r50") else "rn18"}
         else:
-            mem = {"kind": kind, "models": models, "feats": feats if kind != "team" else None}
+            mem = {"kind": kind, "models": models, "feats": feats_k if kind != "team" else None}
         joblib.dump(mem, path, compress=3)
         m5 = oof.ver == "k1o0"
         print(f"  OOF raw Macro F1 (5s) {f1_score(oof.y[m5], CLASSES[oof.loc[m5, PCOLS].to_numpy().argmax(1)], average='macro'):.4f}"
