@@ -85,7 +85,16 @@ python test.py --input <battery_data_light 경로>/test/test.csv \
 | LightGBM 0.3 + DINOv2 CatBoost 0.7 | 0.8953 | 0.8875 | 0.8899 |
 | **LightGBM 0.4 + DINOv2 CatBoost 0.4 + GRU 0.2 (최종)** | **0.9030** | **0.9105** | **0.8917** |
 
-- 시도했지만 채택하지 않은 것: 단계군별 가중치, seed 평균(LightGBM·CatBoost·GRU 3-seed), 2↔3단계 전용 보정 모델, TCN 시퀀스 모델, Train+Validation 학습. 모두 두 검증 점수의 최저점을 올리지 못했어요.
+### 최종 모델 단계별 성능 (5초 간격, cummax 후)
+| 단계 | 1 | 2 | 3 | 4 | 5 | 6 | Macro F1 | 9:1:1 가중 |
+|---|---|---|---|---|---|---|---|---|
+| Train 5-fold OOF (78개 실험) | 0.9996 | 0.8483 | 0.9067 | 0.9017 | 0.9034 | 0.8589 | 0.9031 | 0.9030 |
+| Validation 홀드아웃 (19개 실험) | 1.0000 | 0.8468 | 0.9456 | 0.8472 | 0.9277 | 0.9131 | 0.9134 | 0.9105 |
+
+- 가장 많이 틀리는 곳은 **2↔3단계 경계**예요. Train OOF에서 정답 2를 3으로 733행, 정답 3을 2로 845행 예측했어요. 그다음은 4↔5와 5↔6 경계예요. 1단계는 거의 완벽해요.
+- 혼동행렬 전체는 `reports/metrics.json`에 있어요 (`tools/report_metrics.py`로 재생성).
+
+- 시도했지만 채택하지 않은 것: 단계군별 가중치, seed 평균(LightGBM·CatBoost·GRU 3-seed), 2↔3단계 전용 보정 모델, TCN 시퀀스 모델, ResNet50 이미지 특징, XGBoost·우리 피처 CatBoost 추가, 로지스틱 회귀 메타 스태킹(최저 0.843), Train+Validation 학습. 모두 두 검증 점수의 최저점을 올리지 못했어요.
 - 단계별 F1과 혼동행렬: `python tools/report_metrics.py --members lgb dino seq_gru --weights 0.4 0.4 0.2` (`reports/metrics.json`, 집계값만 저장)
 
 ## 시계열 피처 구성
