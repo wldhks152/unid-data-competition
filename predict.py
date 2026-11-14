@@ -1,10 +1,11 @@
 """추론 — 학습된 bundle로 test 예측 후 제출 파일 생성.
-    python predict.py --data data --run lgb_v1 [--cummax] [--no-tune]
+    python predict.py --data data --run lgb_v1 [--pp none|cummax|hmm] [--no-tune]
 
 운영진이 '미래 관측을 제외한 입력'으로 재실행해 검증할 수 있으므로,
 제출 전에 end-to-end 검사(테스트 시계열을 잘라도 앞부분 예측이 동일한지)를 자동으로 수행한다.
 """
 import argparse
+import json
 import os
 import sys
 
@@ -38,12 +39,23 @@ def main():
     ap.add_argument("--run", default="lgb_v1")
     ap.add_argument("--out", default=None, help="기본: outputs/<run>/submission.csv")
     ap.add_argument("--no-tune", action="store_true", help="클래스 배율 w 미적용")
-    ap.add_argument("--cummax", action="store_true", help="실험별 예측 누적최대 후처리")
+    ap.add_argument("--pp", choices=["none", "cummax", "hmm"], default="none",
+                    help="후처리: cummax(예측 누적최대) / hmm(tune_pp.py 결과 사용)")
+    ap.add_argument("--cummax", action="store_true", help="--pp cummax 와 같음 (하위 호환)")
     a = ap.parse_args()
+    if a.cummax:
+        a.pp = "cummax"
     run_dir = os.path.join("outputs", a.run)
-    out = a.out or os.path.join(run_dir, "submission.csv")
+    out = a.out or os.path.join(run_dir, f"submission_{a.pp}.csv")
     bundle = joblib.load(os.path.join(run_dir, "bundle.joblib"))
-    kw = dict(use_w=not a.no_tune, cummax=a.cummax)
+    hmm = None
+    if a.pp == "hmm":
+        pp_path = os.path.join(run_dir, "pp.json")
+        if not os.path.exists(pp_path):
+            sys.exit(f"[오류] {pp_path} 없음 → 먼저 python tune_pp.py --run {a.run}")
+        with open(pp_path, encoding="utf-8") as f:
+            hmm = json.load(f)
+    kw = dict(use_w=not a.no_tune, cummax=a.pp == "cummax", hmm=hmm)
 
     d = load(a.data, ("test", "sub"))
     te = d["test"]
@@ -57,7 +69,7 @@ def main():
     assert sub.label.notna().all() and len(sub) == len(d["sub"]), "제출 파일 행 불일치"
     sub["label"] = sub.label.astype(int)
     sub.to_csv(out, index=False)
-    print(f"  저장: {out}  {kw}")
+    print(f"  저장: {out}  (pp={a.pp}, use_w={not a.no_tune})")
     print(f"  예측 분포: {sub.label.value_counts().sort_index().to_dict()}")
 
 

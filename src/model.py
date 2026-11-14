@@ -48,11 +48,21 @@ def cummax_pp(F, pred):
     return s.loc[order].groupby(F.loc[order, KEY].values).cummax().loc[F.index].to_numpy()
 
 
-def predict_labels(bundle, F, use_w=True, cummax=False):
-    """저장된 bundle(models, feats, classes, w)로 F의 라벨을 예측."""
+def predict_labels(bundle, F, use_w=True, cummax=False, hmm=None):
+    """저장된 bundle(models, feats, classes, w)로 F의 라벨을 예측.
+    hmm: tune_pp.py가 만든 pp.json 내용 → forward 필터 후 그 안의 w를 사용."""
     P = np.mean([m.predict_proba(F[bundle["feats"]]) for m in bundle["models"]], axis=0)
-    w = bundle["w"] if use_w else np.ones(len(bundle["classes"]))
-    pred = bundle["classes"][(P * w).argmax(1)]
+    classes = bundle["classes"]
+    if hmm is not None:
+        from .postprocess import hmm_filter
+        assert list(hmm["classes"]) == list(classes), "pp.json과 모델의 클래스 불일치"
+        P = hmm_filter(F.reset_index(drop=True), P, hmm)
+        w = np.asarray(hmm["w"])
+    else:
+        w = bundle["w"]
+    if not use_w:
+        w = np.ones(len(classes))
+    pred = classes[(P * w).argmax(1)]
     if cummax:
         pred = cummax_pp(F, pred)
     return pred.astype(int), P

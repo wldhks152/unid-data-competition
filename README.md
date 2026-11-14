@@ -31,18 +31,21 @@ pip install -r requirements.txt
 ```bash
 python eda.py --data data                          # 데이터 점검 (단조성, 간격, 조건 분포)
 python train.py --data data --run lgb_v1           # 실험 단위 5-fold CV → outputs/lgb_v1/
-python predict.py --data data --run lgb_v1         # → outputs/lgb_v1/submission.csv
+python tune_pp.py --run lgb_v1                      # OOF로 후처리 비교 (raw/+w/cummax/hmm) → pp.json
+python predict.py --data data --run lgb_v1 --pp hmm   # → outputs/lgb_v1/submission_hmm.csv
 ```
+- `--pp none|cummax|hmm`: 후처리 방식을 고릅니다. `tune_pp.py` 출력에서 **가중 점수가 가장 높은 방식**을 쓰세요.
+  - label은 모든 실험에서 단조 증가해요. `hmm`은 과거 확률만 누적하는 좌→우 forward 필터예요. cummax처럼 한 번 튄 예측이 고정되는 문제가 덜해요.
 `predict.py` 옵션
 - `--no-tune`: OOF로 튜닝한 클래스 배율 `w`를 적용하지 않습니다.
-- `--cummax`: 실험별로 예측 단계의 누적 최대를 취합니다. label이 단조 증가하고, CV 표에서 이득이 있을 때만 쓰세요.
 
 ## 구조
 ```
 src/data.py       로드, 상수, 다운샘플링
 src/features.py   과거 정보만 쓰는 피처와 누수 검사
-src/model.py      LightGBM, Macro-F1 클래스 배율 튜닝, 후처리
-eda.py / train.py / predict.py
+src/model.py      LightGBM, Macro-F1 클래스 배율 튜닝
+src/postprocess.py  단조 단계 HMM forward 필터 (인과적)
+eda.py / train.py / tune_pp.py / predict.py
 EXPERIMENTS.md    실험·제출 기록 (제출 30회 제한)
 ```
 
