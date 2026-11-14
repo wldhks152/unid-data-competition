@@ -1,7 +1,7 @@
 """학습 — Train+Validation을 합쳐 실험 단위 K-fold로 학습하고, 단일 가중치 파일을 저장한다.
     python train.py --data_dir <battery_data_light 경로> --model_out model.joblib
 
-model.joblib 하나에 fold 모델 · 피처 목록 · 클래스 배율 w · 후처리 설정이 모두 들어 있어
+model.joblib 하나에 fold 모델 · 피처 목록 · 클래스 배율 w · 후처리 설정 · 팀원 CatBoost(앙상블)가 모두 들어 있어
 test.py만으로 재학습 없이 결과를 재현할 수 있다.
 부가 산출물 (model_out과 같은 폴더): <이름>_oof.csv, <이름>_cv.json, <이름>_importance.csv
 """
@@ -17,6 +17,7 @@ import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import StratifiedKFold
 
+from src.ensemble import blend_proba, fit_team, team_image_features
 from src.data import COND, EVAL_VERSIONS, KEY, T, TRAIN_VERSIONS, VER_W, Y, find_csv, load, subsample
 from src.features import causality_check, feature_columns, make_features
 from src.images import add_image_features
@@ -34,8 +35,11 @@ def main():
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--no_balance", action="store_true", help="class_weight=balanced 끄기")
-    ap.add_argument("--no_images", action="store_true", help="이미지 통계 피처 끄기")
+    ap.add_argument("--images", action="store_true", help="이미지 팔레트 통계 피처 켜기 (기본 꺼짐: Validation에서 이득 없음)")
+    ap.add_argument("--no_images", action="store_true", help="(기본값과 같음, 하위 호환용)")
     ap.add_argument("--cache_dir", default="cache", help="이미지 통계 캐시 폴더")
+    ap.add_argument("--alpha", type=float, default=0.5, help="앙상블에서 우리 LightGBM 비율 (나머지는 팀원 CatBoost)")
+    ap.add_argument("--no_catboost", action="store_true", help="팀원 CatBoost 앙상블 끄기 (LightGBM 단독)")
     ap.add_argument("--holdout_valid", action="store_true",
                     help="비교용: Train만으로 학습하고 제공 Validation(19개 실험)으로 평가. 제출용 아님")
     a = ap.parse_args()
@@ -46,11 +50,16 @@ def main():
 
     print("[1] 데이터 로드 (Train + Validation)")
     d = load(a.data_dir, ("train", "valid"))
-    if not a.no_images:
+    if a.images:
         print("  이미지 통계 계산 (처음 1회만 오래 걸리고 이후 캐시 사용)")
         for s in ("train", "valid"):
             root = os.path.dirname(find_csv(a.data_dir, s))
             d[s] = add_image_features(d[s], root, cache_dir=a.cache_dir, tag=s)
+    timg = None
+    if not a.no_catboost:
+        print("  팀원 CatBoost용 이미지 통계 계산 (캐시 사용)")
+        timg = pd.concat([team_image_features(d[s], os.path.dirname(find_csv(a.data_dir, s)),
+                                              cache_dir=a.cache_dir, tag=s) for s in ("train", "valid")])
     if a.holdout_valid:
         print("  ※ holdout 모드: Train만 학습, Validation은 마지막 평가에만 사용")
         tv = d["train"].copy()
@@ -132,30 +141,49 @@ def main():
         print(imp.sort_values(ascending=False).head(15).round(1).to_string())
 
     bundle = {"models": models, "feats": feats, "classes": classes, "w": w, "post": post,
-              "use_images": not a.no_images}
+              "use_images": a.images}
+
+    if not a.no_catboost:
+        print(f"\n[5b] 팀원 CatBoost v1 학습 (같은 데이터 {tv[KEY].nunique()}개 실험, 5초 원본 행) → 앙상블 α={a.alpha}")
+        t0 = time.time()
+        bundle["team"] = fit_team(tv, timg)
+        bundle["alpha"] = a.alpha
+        # 앙상블 후처리는 Validation 비교(ensemble_eval.py)에서 가장 좋았던 +w+cummax로 고정
+        bundle["post"] = post = {"method": "cummax", "use_w": True, "hmm": None}
+        print(f"  완료 ({time.time() - t0:.0f}s) · 앙상블 후처리 = +w+cummax (Validation 비교 결과로 고정)")
 
     holdout = None
     if a.holdout_valid:
         print("\n[6] Holdout 평가 — 제공 Validation (학습에 전혀 쓰지 않은 실험)")
         va = d["valid"]
-        print(f"  {'방식':<14s} {'5s':>7s} {'10s':>7s} {'15s':>7s} {'가중':>7s}")
+        vers = {}
+        for k, o in EVAL_VERSIONS:
+            vk = subsample(va, k, o)
+            Fv = make_features(vk).reset_index(drop=True)
+            vers[f"k{k}o{o}"] = (Fv, blend_proba(dict(bundle, team=None), Fv),
+                                 blend_proba(bundle, Fv, vk, timg) if "team" in bundle else None)
         holdout = {}
-        for meth, uw in [("none", False), ("none", True), ("cummax", False), ("cummax", True)]:
-            name = ("+w+" if uw else "") + meth if meth != "none" else ("+w" if uw else "raw")
-            s = {}
-            for k, o in EVAL_VERSIONS:
-                Fv = make_features(subsample(va, k, o))
-                pv, _ = predict_labels(bundle, Fv, post={"method": meth, "use_w": uw, "hmm": None})
-                s[f"k{k}o{o}"] = f1_score(Fv[Y], pv, average="macro")
-            s["weighted"] = weighted(s)
-            holdout[name] = {k: round(x, 4) for k, x in s.items()}
-            mark = "  ← 선택된 방식" if (meth, uw) == (post["method"], post["use_w"]) else ""
-            print(f"  {name:<14s} {s['k1o0']:7.4f} {s['k2o0']:7.4f} {s['k3o0']:7.4f} {s['weighted']:7.4f}{mark}")
-        Fv = make_features(va)
-        pv, _ = predict_labels(bundle, Fv)
-        print("  클래스별 F1 (선택된 방식, 5초):",
+        for title, idx in [("LightGBM 단독", 1), ("앙상블 (α=%.2f)" % a.alpha, 2)]:
+            if idx == 2 and "team" not in bundle:
+                continue
+            print(f"  --- {title} ---")
+            print(f"  {'방식':<14s} {'5s':>7s} {'10s':>7s} {'15s':>7s} {'가중':>7s}")
+            for meth, uw in [("none", False), ("none", True), ("cummax", False), ("cummax", True)]:
+                name = ("+w+" if uw else "") + meth if meth != "none" else ("+w" if uw else "raw")
+                s = {}
+                for v, tup in vers.items():
+                    pv, _ = predict_labels(bundle, tup[0], post={"method": meth, "use_w": uw, "hmm": None}, P=tup[idx])
+                    s[v] = f1_score(tup[0][Y], pv, average="macro")
+                s["weighted"] = weighted(s)
+                holdout[f"{title}|{name}"] = {k: round(x, 4) for k, x in s.items()}
+                mark = "  ← 저장된 설정" if (meth, uw) == (post["method"], post["use_w"]) and (
+                    idx == 2 or "team" not in bundle) else ""
+                print(f"  {name:<14s} {s['k1o0']:7.4f} {s['k2o0']:7.4f} {s['k3o0']:7.4f} {s['weighted']:7.4f}{mark}")
+        Fv, Po, Pe = vers["k1o0"]
+        pv, _ = predict_labels(bundle, Fv, P=Pe if Pe is not None else Po)
+        print("  클래스별 F1 (저장된 설정, 5초):",
               dict(zip(classes.tolist(), np.round(f1_score(Fv[Y], pv, average=None, labels=classes), 3).tolist())))
-        print("  ※ 팀원 CatBoost v1의 Validation Macro F1 = 0.7505 와 비교하세요 (같은 조건: Train만 학습)")
+        print("  ※ 참고: 팀원 CatBoost v1 단독 Validation Macro F1 = 0.7505 (raw)")
 
     joblib.dump(bundle, a.model_out, compress=3)
     oof.to_csv(f"{stem}_oof.csv", index=False)
@@ -164,7 +192,8 @@ def main():
                    "w": dict(zip(map(str, classes.tolist()), np.round(w, 3).tolist())),
                    "post": {k: v for k, v in post.items() if k != "hmm"}, "oof_macro_f1": table,
                    "per_class_f1_5s": dict(zip(map(str, classes.tolist()), np.round(per_class, 4).tolist())),
-                   "holdout_valid": holdout},
+                   "holdout_valid": holdout,
+                   "ensemble": None if "team" not in bundle else {"alpha": a.alpha, "partner": "team CatBoost v1"}},
                   f, ensure_ascii=False, indent=2)
     size = os.path.getsize(a.model_out) / 1e6
     print(f"\n저장 → {a.model_out} ({size:.1f}MB), {stem}_oof.csv, {stem}_cv.json")

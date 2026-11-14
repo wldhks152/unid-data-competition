@@ -1,5 +1,7 @@
 # Uni-D 배터리 열폭주 6단계 분류
 
+**최종 모델: LightGBM(과거 방향 시계열·사건 피처) 0.5 + 팀원 CatBoost v1 0.5 확률 앙상블 → 클래스 배율 + 단계 누적최대(cummax) 후처리**
+
 ## 팀 정보
 - 팀명: <팀명>
 - 최종 선택 제출 파일: <리더보드에서 선택한 파일명>, Private 복원 대상
@@ -16,23 +18,23 @@
 | `src/features.py` | 센서·이미지 통계에 대한 과거 방향 시계열 피처 생성, 누수 검사 |
 | `src/images.py` | 열화상 PNG의 의사색 팔레트 위치(보라→빨강→흰색)를 상대 온도로 환산해 분포 통계 계산 (사전학습 모델 없음) |
 | `src/model.py` | LightGBM 정의, Macro-F1용 클래스 배율 튜닝, 후처리(cummax) |
+| `src/ensemble.py` | 우리 LightGBM과 팀원 CatBoost 확률을 α:(1-α)로 섞음 |
+| `src/team_catboost.py` | 팀원 CatBoost v1의 피처·모델 코드 (브랜치 `experiments/catboost_v1`에서 그대로 가져옴) |
 | `src/postprocess.py` | 단조 단계 HMM forward 필터 (선택적 후처리) |
 | `src/data.py` | 데이터 로드, 상수, 측정 간격 다운샘플링 |
 | `train.py` | Train+Validation으로 실험 단위 K-fold 학습·평가, 가중치 저장 |
 | `test.py` | 입력 CSV에 들어 있는 행만으로 추론하고 제출 파일 생성 |
 | `tune_pp.py` | (선택) OOF로 후처리 방식 비교·적용 |
 | `eda.py` | 데이터 점검 |
-| `model.joblib` | 학습된 가중치 (fold 모델 5개 + 피처 목록 + 클래스 배율 + 후처리 설정). 재학습 없이 `test.py`만으로 결과 재현 |
+| `ensemble_eval.py` | (비교용) 두 모델 단독·앙상블 비율별 Validation 점수 |
+| `model.joblib` | 학습된 가중치 (LightGBM fold 모델 5개 + 팀원 CatBoost 1개 + 피처 목록 + 앙상블 비율 + 클래스 배율 + 후처리 설정). 재학습 없이 `test.py`만으로 결과 재현 |
 
 ## 실행 방법
 ```bash
 pip install -r requirements.txt
 
-# 학습 (Train+Validation 전체 사용, 약 수 분)
+# 학습 (Train+Validation 전체 사용, LightGBM + CatBoost 앙상블)
 python train.py --data_dir <battery_data_light 경로> --model_out model.joblib
-
-# (선택) 후처리 비교 후 최고 방식 적용
-python tune_pp.py --model model.joblib --apply
 
 # 추론
 python test.py --input <battery_data_light 경로>/test/test.csv \
@@ -47,8 +49,19 @@ python test.py --input <battery_data_light 경로>/test/test.csv \
 - 학습 데이터: Train+Validation (실험 97개)
 - 검증 방법: Train+Validation을 합친 뒤 **실험 단위 Stratified K-fold(5)**. 층화 기준은 tr_method×bat_class예요. 같은 실험의 행이 학습과 검증에 동시에 들어가지 않아요.
   - Test에는 5/10/15초 간격이 섞여 있어요. 그래서 검증 실험을 10초·15초로 솎아낸 버전으로도 평가하고, 9:1:1로 가중 평균해요.
-- 최종 모델: 5개 fold 모델의 확률 평균
-- 검증 점수: <OOF Macro F1, model_cv.json의 oof_macro_f1>
+- LightGBM: 5개 fold 모델의 확률 평균
+- CatBoost (팀원 v1, 피처 33개): Train+Validation 전체로 1회 학습
+- 앙상블: 확률을 LightGBM 0.5 : CatBoost 0.5로 평균 → 클래스 배율 → cummax
+- 검증 점수 (제공 Validation 19개 실험, 두 모델 모두 Train만 학습, `python train.py ... --holdout_valid`):
+
+| 모델 | Validation Macro F1 (5/10/15초 9:1:1 가중) |
+|---|---|
+| 팀원 CatBoost v1 단독 | 0.750 |
+| LightGBM 단독 (+w) | 0.897 |
+| **앙상블 α=0.5 (+w+cummax)** | **0.903** |
+| 앙상블 α=0.25 (+w+cummax) | 0.905 |
+
+  α=0.25와 0.5의 차이가 작고 0.25는 Validation에서 고른 값이라, 치우치지 않은 0.5를 채택했어요.
 
 ## 시계열 피처 구성
 같은 `experiment_id` 안에서 `relative_time_s` 순으로 정렬한 뒤, **현재 행과 그 이전 행만** 사용해요.

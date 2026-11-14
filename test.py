@@ -16,29 +16,32 @@ import numpy as np
 import pandas as pd
 
 from src.data import KEY, T
+from src.ensemble import blend_proba, team_image_features
 from src.features import make_features
 from src.images import add_image_features
 from src.model import predict_labels
 
 
-def predict_df(bundle, df):
-    F = make_features(df)
+def predict_df(bundle, df, timg=None):
+    """df 행만으로 예측. timg: 팀원 CatBoost용 이미지 통계 (행별 독립 계산, 앙상블일 때만)."""
+    F = make_features(df).reset_index(drop=True)
     missing = [c for c in bundle["feats"] if c not in F.columns]
     if missing:
         print(f"  [경고] 피처 {len(missing)}개 없음 → NaN으로 채움 (예: {missing[:3]})")
         F = F.assign(**{c: np.nan for c in missing})
-    pred, _ = predict_labels(bundle, F)
+    P = blend_proba(bundle, F, df, timg)
+    pred, _ = predict_labels(bundle, F, P=P)
     return pd.Series(pred, index=F.sample_id.values)
 
 
-def causality_check(bundle, df, pred_full, n_exp=5, seed=0):
+def causality_check(bundle, df, pred_full, timg=None, n_exp=5, seed=0):
     """입력의 일부 실험을 임의 지점에서 잘라 다시 예측 → 남은 행 예측이 전체 예측과 같아야 한다."""
     rng = np.random.default_rng(seed)
     exps = rng.choice(df[KEY].unique(), size=min(n_exp, df[KEY].nunique()), replace=False)
     for e in exps:
         g = df[df[KEY] == e].sort_values(T)
         cut = int(rng.integers(1, len(g) + 1))
-        p = predict_df(bundle, g.iloc[:cut])
+        p = predict_df(bundle, g.iloc[:cut], timg)
         if not (p.to_numpy() == pred_full.loc[p.index].to_numpy()).all():
             sys.exit(f"[누수!] 실험 {e}: 미래 행을 빼면 예측이 달라집니다.")
     print(f"  누수 검사 OK — {len(exps)}개 실험을 잘라도 남은 행의 예측 동일")
@@ -55,17 +58,19 @@ def main():
     a = ap.parse_args()
 
     bundle = joblib.load(a.model)
-    print(f"  모델: {a.model}  후처리={bundle['post']['method']}, w={bundle['post']['use_w']}, "
+    ens = f"앙상블(LightGBM {bundle['alpha']:.2f} + CatBoost {1 - bundle['alpha']:.2f})" if "team" in bundle else "LightGBM 단독"
+    print(f"  모델: {a.model}  {ens}, 후처리={bundle['post']['method']}, w={bundle['post']['use_w']}, "
           f"이미지={bundle.get('use_images', False)}")
     df = pd.read_csv(a.input)
     print(f"  입력: {a.input}  {len(df):,} rows, {df[KEY].nunique()} experiments")
+    root = a.image_root or os.path.dirname(os.path.abspath(a.input))
     if bundle.get("use_images", False):
-        root = a.image_root or os.path.dirname(os.path.abspath(a.input))
         df = add_image_features(df, root)
+    timg = team_image_features(df, root) if "team" in bundle else None
 
-    pred = predict_df(bundle, df)
+    pred = predict_df(bundle, df, timg)
     if not a.skip_check:
-        causality_check(bundle, df, pred)
+        causality_check(bundle, df, pred, timg)
 
     if a.sample_submission:
         ss = pd.read_csv(a.sample_submission)

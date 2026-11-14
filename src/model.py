@@ -48,11 +48,13 @@ def cummax_pp(F, pred):
     return s.loc[order].groupby(F.loc[order, KEY].values).cummax().loc[F.index].to_numpy()
 
 
-def predict_labels(bundle, F, post=None):
+def predict_labels(bundle, F, post=None, P=None):
     """저장된 bundle로 F의 라벨을 예측. 후처리 설정은 bundle["post"]에 내장되어 있다.
-    post = {"method": "none"|"cummax"|"hmm", "use_w": bool, "hmm": {...} | None}"""
+    post = {"method": "none"|"cummax"|"hmm", "use_w": bool, "hmm": {...} | None}
+    P: 미리 계산한 확률(앙상블 등). 없으면 우리 fold 모델 평균."""
     post = post or bundle["post"]
-    P = np.mean([m.predict_proba(F[bundle["feats"]]) for m in bundle["models"]], axis=0)
+    if P is None:
+        P = np.mean([m.predict_proba(F[bundle["feats"]]) for m in bundle["models"]], axis=0)
     classes = bundle["classes"]
     w = np.asarray(bundle["w"])
     if post["method"] == "hmm":
