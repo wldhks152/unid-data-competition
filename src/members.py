@@ -188,7 +188,7 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         return ExtraTreesMember(seed).fit(trn_F[feats], trn_F["label"])
     if kind in ("ord", "ordx"):  # ordx: 같은 순서형을 XGBoost(CUDA)로
         return OrdinalLGB(seed, backend="xgb" if kind == "ordx" else "lgb", gpu=gpu).fit(trn_F[feats], trn_F["label"])
-    if kind == "xgb":  # 라벨 1..6 → 0..5
+    if kind in ("xgb", "xgbf"):  # 라벨 1..6 → 0..5 (xgbf: + 짧은 창 피처 f_)
         from sklearn.utils.class_weight import compute_sample_weight
         y = trn_F["label"].to_numpy().astype(int) - 1
         m = make_xgb(seed, gpu=gpu)
@@ -220,7 +220,7 @@ def predict_member(kind, model, F=None, feats=None, raw=None, timg=None, emb=Non
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_)
     if kind in ("ord", "ordx", "et", "tabnet"):
         return model.predict_proba(F[feats])
-    if kind == "xgb":
+    if kind in ("xgb", "xgbf"):
         return _reorder(model.predict_proba(F[feats].to_numpy(np.float32)), model.classes_ + 1)
     if kind == "team":
         return team_proba(model, raw, timg, F.sample_id.values, list(CLASSES))
