@@ -31,6 +31,32 @@ def _encoder(device="auto"):
     return _ENC[device]
 
 
+BATCH = 256
+
+
+def _extract(enc, paths, label, batch=BATCH, workers=None):
+    """배치 추출. 전처리(PNG 열기·리사이즈)는 스레드로 병렬, 마지막 배치도 0으로 채워 항상 같은 배치 크기로 돌린다
+    → 행 순서·실험 분할이 달라도 이미지마다 같은 임베딩 (cuDNN 알고리즘이 배치 크기에 따라 바뀌지 않음)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from .rn18_encoder import _torch, preprocess_image
+    torch = _torch()
+    out = np.empty((len(paths), 512), dtype=np.float32)
+    workers = workers or min(16, os.cpu_count() or 4)
+    with ThreadPoolExecutor(workers) as ex, torch.inference_mode():
+        for s in range(0, len(paths), batch):
+            chunk = paths[s:s + batch]
+            x = np.zeros((batch, 3, 224, 224), dtype=np.float32)
+            x[:len(chunk)] = np.stack(list(ex.map(lambda p: preprocess_image(Path(p)), chunk)))
+            f = enc.model(torch.from_numpy(x).to(enc.device)).float().cpu().numpy()[:len(chunk)]
+            if not np.isfinite(f).all():
+                raise ValueError("ResNet18 특징에 NaN/inf")
+            out[s:s + len(chunk)] = f
+            done = s + len(chunk)
+            if done % (batch * 20) < batch or done == len(paths):
+                print(f"[{label}] {done:,}/{len(paths):,} images (batch={batch})", flush=True)
+    return out
+
+
 def embeddings(df, image_root, cache_dir=None, tag=None, device="auto"):
     """sample_id 인덱스의 (n, 512) DataFrame. cache_dir·tag가 있으면 npz로 캐시."""
     cache = os.path.join(cache_dir, f"rn18_{tag}.npz") if cache_dir and tag else None
@@ -43,7 +69,7 @@ def embeddings(df, image_root, cache_dir=None, tag=None, device="auto"):
     paths = [str(Path(p).resolve()) for p in TM.resolve_image_paths(df, [root, root.parent])]
     todo = sorted({p for p in paths if p not in _MEMO})
     if todo:
-        for p, e in zip(todo, _encoder(device).extract(todo, progress_label=tag or "images")):
+        for p, e in zip(todo, _extract(_encoder(device), todo, tag or "images")):
             _MEMO[p] = e
     E = np.stack([_MEMO[p] for p in paths]).astype(np.float32) if paths else np.zeros((0, 512), np.float32)
     out = pd.DataFrame(E, index=pd.Index(df.sample_id.values, name="sample_id"), columns=EMB_COLS)
