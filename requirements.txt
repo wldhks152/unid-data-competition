@@ -3,5 +3,5 @@ pandas==2.3.3
 scikit-learn==1.7.2
 pillow==12.3.0
 joblib==1.6.0
-catboost==1.2.10
+catboost==1.2.8
 torch

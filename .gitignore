@@ -1,30 +1,26 @@
-# 대회 데이터 (절대 커밋 금지)
+*.csv
+*.tsv
+*.parquet
+*.feather
+*.tar
+*.tar.gz
+*.zip
+*.png
+*.jpg
+*.jpeg
+*.ipynb
 data/
-
-# 모델 가중치 (100MB 초과 파일은 GitHub에 올라가지 않음 → 드라이브 링크를 README에)
-*.pt
-*.pth
-*.ckpt
-*.safetensors
-*.bin
-*.onnx
-*.h5
-weights/
-checkpoints/
-
-# Python
-__pycache__/
-*.py[cod]
+images/
+work/
 .venv/
 venv/
+__pycache__/
+*.pyc
 .ipynb_checkpoints/
-
-# 환경/비밀
+catboost_info/
+*.log
 .env
+.env.*
+*.pem
 *.key
-
-# OS / 에디터
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
+# Track weights/model.joblib, weights/model.metrics.json and ALL weights/encoder shards.

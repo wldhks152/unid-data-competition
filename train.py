@@ -1,4 +1,4 @@
-"""Extract frozen ResNet18 features, then fit CatBoost on the provided server."""
+"""Add 13 current sensor values to the frozen ResNet18 + CatBoost v1 recipe."""
 from __future__ import annotations
 
 import argparse
@@ -6,6 +6,8 @@ import gc
 import importlib.metadata
 import json
 import platform
+import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -16,9 +18,40 @@ from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from sklearn.model_selection import GroupKFold
 
 import model as M
-from encoder import FrozenResNet18, TRANSFORM_SPEC, prepare_encoder, resolve_device, runtime_info
+from encoder import FrozenResNet18, TRANSFORM_SPEC, prepare_encoder, resolve_device, runtime_info, verify_encoder
 
 HERE = Path(__file__).resolve().parent
+
+
+def prepare_encoder_for_run(weights_dir: Path, pretrained_dir: Path | None):
+    """Read verified official weights from v1 and copy an independent encoder.
+
+    Nothing in pretrained_dir is modified. The complete new package can infer
+    offline without the old model folder. Inference never calls this function.
+    """
+    weights_dir = Path(weights_dir)
+    if pretrained_dir is None:
+        return prepare_encoder(weights_dir)
+    source_manifest = Path(pretrained_dir).resolve() / 'encoder' / 'manifest.json'
+    metadata = verify_encoder(source_manifest)
+    target_dir = weights_dir / 'encoder'
+    target_manifest = target_dir / 'manifest.json'
+    if target_manifest.exists():
+        return verify_encoder(target_manifest, expected_sha256=metadata['full_sha256'])
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    print(f'공식 사전학습 encoder를 검증·복사합니다: {source_manifest.parent}', flush=True)
+    with tempfile.TemporaryDirectory(prefix='.encoder_copy_', dir=weights_dir) as temporary:
+        staging = Path(temporary)
+        for part in metadata['parts']:
+            shutil.copyfile(source_manifest.parent / part['name'], staging / part['name'])
+        shutil.copyfile(source_manifest, staging / 'manifest.json')
+        verify_encoder(staging / 'manifest.json', expected_sha256=metadata['full_sha256'])
+        target_dir.mkdir(parents=True, exist_ok=True)
+        # Install the manifest last so incomplete copies never look complete.
+        for part in metadata['parts']:
+            (staging / part['name']).replace(target_dir / part['name'])
+        (staging / 'manifest.json').replace(target_manifest)
+    return verify_encoder(target_manifest, expected_sha256=metadata['full_sha256'])
 
 
 def read_training_split(data_dir: Path, split: str, image_jobs: int, encoder):
@@ -37,7 +70,7 @@ def read_training_split(data_dir: Path, split: str, image_jobs: int, encoder):
         raise ValueError(f'{M.FEATURE_COUNT}개 특징을 예상했습니다.')
     print(
         f'[{split}] 완료: {len(frame):,}행 / {frame.experiment_id.nunique()}개 실험 / '
-        f'{features.shape[1]}개 특징 (기존 33 + ResNet18 512)', flush=True,
+        f'{features.shape[1]}개 특징 (기존 33 + ResNet18 512 + 추가 센서 13)', flush=True,
     )
     return frame, features, pd.to_numeric(frame['label'], errors='raise').astype(int)
 
@@ -50,6 +83,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data_dir', type=Path, required=True)
     parser.add_argument('--model_out', type=Path, default=HERE / 'weights' / 'model.joblib')
+    parser.add_argument('--pretrained_dir', type=Path, default=None,
+                        help='기존 ResNet18 CatBoost의 weights 폴더. 공식 encoder를 읽기만 합니다.')
     parser.add_argument('--device', choices=['auto', 'cuda', 'cpu'], default='auto')
     parser.add_argument('--threads', type=int, default=4)
     parser.add_argument('--image_jobs', type=int, default=4)
@@ -58,14 +93,19 @@ def main():
         parser.error('--threads와 --image_jobs는 1 이상이어야 합니다.')
     if not args.data_dir.is_dir():
         raise FileNotFoundError(f'데이터 폴더가 없습니다: {args.data_dir}')
+    if args.model_out.exists():
+        raise FileExistsError(f'이미 학습된 모델입니다. 새 --model_out 경로를 지정하세요: {args.model_out}')
 
     np.random.seed(M.SEED)
     started = time.monotonic()
     args.model_out.parent.mkdir(parents=True, exist_ok=True)
     device = resolve_device(args.device)
     print(f'ResNet18 특징 추출 장치: {device}, batch=1 (동결 모델)', flush=True)
-    print('공식 ImageNet 사전학습 가중치를 준비합니다. 처음 한 번은 다운로드가 필요합니다.', flush=True)
-    encoder_metadata = prepare_encoder(args.model_out.parent)
+    print('추가 입력 13개:', ', '.join(M.ADDED_SENSORS), flush=True)
+    print('기존 545개 특징·이미지 전처리·분류기·검증 방법을 유지합니다.', flush=True)
+    if args.pretrained_dir is None:
+        print('공식 ImageNet 사전학습 가중치를 준비합니다. 없으면 다운로드합니다.', flush=True)
+    encoder_metadata = prepare_encoder_for_run(args.model_out.parent, args.pretrained_dir)
     manifest = args.model_out.parent / 'encoder' / 'manifest.json'
     image_encoder = FrozenResNet18(manifest, device=device, expected_sha256=encoder_metadata['full_sha256'])
     encoder_runtime = runtime_info(device)
@@ -113,7 +153,8 @@ def main():
         'features': list(x_train.columns),
         'feature_count': M.FEATURE_COUNT,
         'class_weight': None,
-        'experiment': 'resnet18_catboost_v1_33_plus_512',
+        'experiment': M.EXPERIMENT,
+        'added_sensors': list(M.ADDED_SENSORS),
         'parameters': parameters,
         'encoder_manifest': 'encoder/manifest.json',
         'encoder_sha256': encoder_metadata['full_sha256'],
@@ -132,6 +173,9 @@ def main():
         'feature_count': M.FEATURE_COUNT,
         'base_feature_count': 33,
         'resnet18_feature_count': 512,
+        'original_feature_count': M.ORIGINAL_FEATURE_COUNT,
+        'added_sensor_count': len(M.ADDED_SENSORS),
+        'added_sensors': list(M.ADDED_SENSORS),
         'features': bundle['features'],
         'seed': M.SEED,
         'class_weight': None,
@@ -157,12 +201,23 @@ def main():
         },
         'torchvision_runtime_dependency': False,
     }
+    matrix = np.asarray(report['validation_confusion_matrix'])
+    report['validation_focus_errors'] = {
+        f'actual_{actual}_predicted_{predicted}': int(matrix[actual - 1, predicted - 1])
+        for actual, predicted in [(3, 2), (5, 4), (2, 3), (4, 5)]
+    }
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(
         f'class_weight=none: Train GroupKFold Macro F1 {report["cv_mean"]:.4f} '
         f'± {report["cv_std"]:.4f} | Validation Macro F1 {validation_score:.4f}', flush=True,
     )
-    print('モデル保存:', args.model_out, flush=True)
+    print('Validation 단계별 성능: label / precision / recall / F1 / support', flush=True)
+    for label in M.LABELS:
+        row = report['validation_classification_report'][str(label)]
+        print(f'  {label}: {row["precision"]:.4f} / {row["recall"]:.4f} / '
+              f'{row["f1-score"]:.4f} / {int(row["support"])}', flush=True)
+    print('Validation 주요 혼동:', report['validation_focus_errors'], flush=True)
+    print('모델 저장:', args.model_out, flush=True)
     print('ResNet18 가중치 저장:', manifest.parent, flush=True)
     print('평가 요약 저장:', report_path, flush=True)
 
