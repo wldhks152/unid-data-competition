@@ -60,6 +60,7 @@ def main():
     ap.add_argument("--post", choices=["none", "cummax"], default=None, help="후처리 덮어쓰기")
     ap.add_argument("--use_w", type=int, choices=[0, 1], default=None, help="클래스 배율 w 사용 여부 덮어쓰기")
     ap.add_argument("--gate", choices=["none", "12", "1234"], default=None, help="단계 전환 규칙 게이트 (src/model.py rule_gate)")
+    ap.add_argument("--w_power", type=float, default=None, help="클래스 배율을 w**p로 완화 (0=배율 없음, 1=그대로)")
     a = ap.parse_args()
 
     bundle = joblib.load(a.model)
@@ -70,6 +71,9 @@ def main():
         bundle["post"]["use_w"] = bool(a.use_w)
     if a.gate is not None:
         bundle["post"]["gate"] = a.gate
+    if a.w_power is not None:
+        bundle["w"] = np.asarray(bundle["w"], dtype=float) ** a.w_power
+        print(f"  w → w**{a.w_power}: {np.round(bundle['w'], 2).tolist()}")
     if a.alpha is not None:
         if a.alpha >= 1 and "team" in bundle:
             bundle.pop("team")
