@@ -215,10 +215,10 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         sel = trn_F["label"].isin([2, 3]).to_numpy()
         m.fit(trn_F.loc[sel, feats], (trn_F.loc[sel, "label"] == 3).astype(int))
         return m
-    if kind in ("rn18", "rn18s", "rn18d", "dino", "r50", "dinod", "dinodf"):  # dinod: + 이미지 시간 변화, dinodf: + 첫 프레임 대비 차이
+    if kind in ("rn18", "rn18s", "rn18d", "dino", "r50", "dinod", "dinodf", "dinod2"):  # dinod: + 이미지 시간 변화, dinodf: + 첫 프레임 대비 차이
         from . import rn18
         return rn18.fit(trn_raw, timg, emb, gpu=gpu, sensors=kind != "rn18", seed=seed if seed_variant else None,
-                        dyn={"dinod": 1, "rn18d": 1, "dinodf": 2}.get(kind, 0))
+                        dyn={"dinod": 1, "rn18d": 1, "dinodf": 2, "dinod2": 3}.get(kind, 0))
     raise ValueError(kind)
 
 
@@ -244,7 +244,7 @@ def predict_member(kind, model, F=None, feats=None, raw=None, timg=None, emb=Non
         P = np.zeros((len(F), len(CLASSES)))
         P[:, 1], P[:, 2] = 1 - q, q
         return P
-    if kind in ("rn18", "rn18s", "rn18d", "dino", "r50", "dinod", "dinodf"):
+    if kind in ("rn18", "rn18s", "rn18d", "dino", "r50", "dinod", "dinodf", "dinod2"):
         from . import rn18
         return rn18.proba(model, raw, timg, emb, F.sample_id.values)
     raise ValueError(kind)

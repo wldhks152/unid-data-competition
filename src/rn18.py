@@ -87,7 +87,33 @@ DYN_COLS = (["dyn_first"] + [f"dyn_w{int(w)}" for w in DYN_WINDOWS] + ["dyn_rate
             "dyn_first_cmax", "dyn_w30_cmax", "dyn_novel_cmax", "dyn_t_since_w30_peak", "dyn_norm_d0"])
 
 
-def emb_dynamics(frame, E, delta=False):
+DYN2_COLS = ["dyn_w15_mean60", "dyn_w15_max60", "dyn_w15_mean300", "dyn_w15_rel", "dyn_novel60", "dyn_novel60_cmax",
+             "dyn_t_since_novel_peak", "dyn_first_rate30", "dyn_base_cmax", "dyn_base_drop", "dyn_first_drop"]
+
+
+def _win_mean(t, x, w):
+    """(t−w, t] 창의 평균 (NaN 제외). 누적합의 차이라 과거 행만 쓴다."""
+    ok = ~np.isnan(x)
+    cs = np.r_[0.0, np.cumsum(np.where(ok, x, 0.0))]
+    cn = np.r_[0, np.cumsum(ok)]
+    j = np.searchsorted(t, t - w, side="right")
+    i = np.arange(len(t)) + 1
+    k = cn[i] - cn[j]
+    return np.where(k > 0, (cs[i] - cs[j]) / np.maximum(k, 1), np.nan)
+
+
+def _win_max(t, x, w):
+    j = np.searchsorted(t, t - w, side="right")
+    out = np.full(len(t), np.nan)
+    for i in range(len(t)):
+        seg = x[j[i]:i + 1]
+        seg = seg[~np.isnan(seg)]
+        if len(seg):
+            out[i] = seg.max()
+    return out
+
+
+def emb_dynamics(frame, E, delta=False, v2=False):
     """이미지 임베딩의 '시간 변화' 피처 — 같은 실험의 현재·과거 프레임만 쓴다 (미래 정보 없음).
     2→3 전환은 센서 임계값 규칙이 없어서(일치율 최고 33%), 화면 자체가 바뀌는 순간(연기·벤팅 등)을 잡으려는 것.
       dyn_first : 첫 프레임과의 코사인 거리          dyn_w{15,30,60,120}: w초 전 프레임과의 코사인 거리
@@ -101,7 +127,8 @@ def emb_dynamics(frame, E, delta=False):
     n = len(frame)
     U = E / np.maximum(np.sqrt(np.einsum("ij,ij->i", E, E)), 1e-12)[:, None]
     nrm = np.sqrt(np.einsum("ij,ij->i", E, E))
-    out = {c: np.full(n, np.nan) for c in DYN_COLS}
+    cols = list(DYN_COLS) + (DYN2_COLS if v2 else [])
+    out = {c: np.full(n, np.nan) for c in cols}
     D = np.zeros_like(E) if delta else None
     t_all = pd.to_numeric(frame[T], errors="coerce").to_numpy(float)
     dist = lambda A, B: 1.0 - np.einsum("ij,ij->i", A, B)
@@ -121,15 +148,18 @@ def emb_dynamics(frame, E, delta=False):
         mu = np.cumsum(np.where(inb[:, None], X, 0.0), axis=0) / np.cumsum(inb)[:, None]
         mu = mu / np.maximum(np.sqrt(np.einsum("ij,ij->i", mu, mu)), 1e-12)[:, None]
         c["dyn_base"] = dist(X, mu)
-        nov = np.full(m, np.nan)
+        nov, nov60 = np.full(m, np.nan), np.full(m, np.nan)
         jmax = np.searchsorted(t, t - 15.0, side="right")  # 15초 이상 지난 프레임 수
+        jmax60 = np.searchsorted(t, t - 60.0, side="right")
         for s in range(0, m, 512):
             e = min(m, s + 512)
-            S = np.einsum("id,jd->ij", X[s:e], X[:jmax[e - 1]]) if jmax[e - 1] > 0 else np.zeros((e - s, 0))
-            S = np.where(np.arange(S.shape[1])[None, :] < jmax[s:e, None], S, -np.inf)
-            if S.shape[1]:
-                best = S.max(1)
-                nov[s:e] = np.where(jmax[s:e] > 0, 1.0 - best, np.nan)
+            if jmax[e - 1] <= 0:
+                continue
+            S0 = np.einsum("id,jd->ij", X[s:e], X[:jmax[e - 1]])
+            ar = np.arange(S0.shape[1])[None, :]
+            nov[s:e] = np.where(jmax[s:e] > 0, 1.0 - np.where(ar < jmax[s:e, None], S0, -np.inf).max(1), np.nan)
+            if v2:
+                nov60[s:e] = np.where(jmax60[s:e] > 0, 1.0 - np.where(ar < jmax60[s:e, None], S0, -np.inf).max(1), np.nan)
         c["dyn_novel"] = nov
         with np.errstate(invalid="ignore"):
             for a in ("dyn_first", "dyn_w30", "dyn_novel"):
@@ -138,11 +168,31 @@ def emb_dynamics(frame, E, delta=False):
             is_new = d30 >= c["dyn_w30_cmax"]
         last = np.maximum.accumulate(np.where(is_new, np.arange(m), 0))
         c["dyn_t_since_w30_peak"] = np.where(np.isnan(c["dyn_w30_cmax"]), np.nan, t - t[last])
+        if v2:  # 지속되는 변화(떨림) · 더 오래된 과거 대비 새로움 · 기준 화면으로 되돌아옴
+            d15 = c["dyn_w15"]
+            c["dyn_w15_mean60"], c["dyn_w15_max60"] = _win_mean(t, d15, 60.0), _win_max(t, d15, 60.0)
+            c["dyn_w15_mean300"] = _win_mean(t, d15, 300.0)
+            ok = ~np.isnan(d15)
+            em = np.cumsum(np.where(ok, d15, 0.0)) / np.maximum(np.cumsum(ok), 1)
+            c["dyn_w15_rel"] = np.where(ok & (em > 0), d15 / np.where(em > 0, em, 1.0), np.nan)
+            c["dyn_novel60"] = nov60
+            with np.errstate(invalid="ignore"):
+                c["dyn_novel60_cmax"] = np.fmax.accumulate(nov60)
+                ncm = c["dyn_novel_cmax"]
+                isn = c["dyn_novel"] >= ncm
+                lastn = np.maximum.accumulate(np.where(isn, np.arange(m), 0))
+                c["dyn_t_since_novel_peak"] = np.where(np.isnan(ncm), np.nan, t - t[lastn])
+                j30 = np.searchsorted(t, t - 30.0, side="left")
+                dt30 = t - t[j30]
+                c["dyn_first_rate30"] = np.where(dt30 > 0, (c["dyn_first"] - c["dyn_first"][j30]) / np.where(dt30 > 0, dt30, 1), np.nan)
+                c["dyn_base_cmax"] = np.fmax.accumulate(c["dyn_base"])
+                c["dyn_base_drop"] = c["dyn_base_cmax"] - c["dyn_base"]
+                c["dyn_first_drop"] = c["dyn_first_cmax"] - c["dyn_first"]
         for k, v in c.items():
             out[k][o] = v
         if delta:
             D[o] = E[o] - E[o][0]
-    res = pd.DataFrame(out, columns=DYN_COLS).astype(np.float32)
+    res = pd.DataFrame(out, columns=cols).astype(np.float32)
     if delta:
         res = pd.concat([res, pd.DataFrame(D.astype(np.float32), columns=[f"dd_{i:03d}" for i in range(E.shape[1])])], axis=1)
     return res
@@ -150,7 +200,8 @@ def emb_dynamics(frame, E, delta=False):
 
 def build_X(frame, timg, emb, sensors=False, dyn=0):
     """sensors=False: v1 (33 + 512), True: v2 (33 + 512 + 현재 센서 13).
-    dyn=1: + 이미지 임베딩 시간 변화 피처(emb_dynamics), dyn=2: + 첫 프레임 대비 임베딩 차이 전체."""
+    dyn=1: + 이미지 임베딩 시간 변화 피처(emb_dynamics), dyn=2: + 첫 프레임 대비 임베딩 차이 전체,
+    dyn=3: dyn=1 + 확장 변화 피처(DYN2_COLS)."""
     base = TM.build_features(frame, timg)
     E = emb.reindex(frame["sample_id"].values)
     assert E.notna().all(axis=1).all(), "이미지 임베딩이 없는 샘플이 있습니다."
@@ -158,7 +209,7 @@ def build_X(frame, timg, emb, sensors=False, dyn=0):
     if sensors:
         parts.append(TM.numeric(frame, ADDED_SENSORS).reset_index(drop=True))
     if dyn:
-        parts.append(emb_dynamics(frame.reset_index(drop=True), E.to_numpy(np.float32), delta=dyn >= 2))
+        parts.append(emb_dynamics(frame.reset_index(drop=True), E.to_numpy(np.float32), delta=dyn == 2, v2=dyn == 3))
     return pd.concat(parts, axis=1)
 
 
