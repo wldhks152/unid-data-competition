@@ -41,12 +41,28 @@ def tune_class_weights(P, y, classes, rounds=3, lo=0.4, hi=3.0):
     return w, best
 
 
-def cummax_pp(F, pred):
-    """실험별 시간순 누적최대 — 과거 예측만 쓰므로 규칙 위반 아님. label이 단조증가일 때만 의미."""
-    s = pd.Series(np.asarray(pred), index=F.index)
-    order = F.sort_values([KEY, T]).index
-    return s.loc[order].groupby(F.loc[order, KEY].values).cummax().loc[F.index].to_numpy()
+_CUMMAX_CACHE = {}
 
+
+def cummax_pp(F, pred):
+    """실험별 시간순 누적최대 — 과거 예측만 쓰므로 규칙 위반 아님. label이 단조증가일 때만 의미.
+    (numpy 구현: 실험 코드별 오프셋을 더해 한 번의 maximum.accumulate로 처리.
+     같은 프레임 객체를 반복해서 넘기면 정렬 순서를 재사용한다 — weakref로 객체 동일성 확인)"""
+    import weakref
+    pred = np.asarray(pred)
+    hit = _CUMMAX_CACHE.get(id(F))
+    if hit is not None and hit[0]() is F and len(hit[1]) == len(F):
+        order, off = hit[1], hit[2]
+    else:
+        codes = pd.factorize(F[KEY].to_numpy())[0].astype(np.int64)
+        order = np.lexsort((F[T].to_numpy(), codes))
+        off = codes[order] * 1000
+        if len(_CUMMAX_CACHE) > 256:
+            _CUMMAX_CACHE.clear()
+        _CUMMAX_CACHE[id(F)] = (weakref.ref(F), order, off)
+    out = np.empty_like(pred)
+    out[order] = np.maximum.accumulate(pred[order].astype(np.int64) + off) - off
+    return out
 
 def rule_gate(F, pred, mode):
     """단계 전환 규칙으로 예측 범위를 제한한다. 사건 피처(과거만 사용)만 쓰므로 규칙 위반 아님.

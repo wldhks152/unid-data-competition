@@ -51,6 +51,20 @@ def load_folds(path):
 # ---------------------------------------------------------------------------
 # 2. 공통 점수
 # ---------------------------------------------------------------------------
+def macro_f1(y, pred, labels=CLASSES):
+    """sklearn f1_score(average="macro", labels=1..6, zero_division=0)와 같은 값, numpy로 빠르게."""
+    y = np.asarray(y, dtype=np.int64)
+    pred = np.asarray(pred, dtype=np.int64)
+    k = int(max(labels.max(), y.max(initial=0), pred.max(initial=0))) + 1
+    cm = np.bincount(y * k + pred, minlength=k * k).reshape(k, k)
+    tp = cm[labels, labels].astype(float)
+    fp = cm[:, labels].sum(0) - tp
+    fn = cm[labels, :].sum(1) - tp
+    den = 2 * tp + fp + fn
+    f1 = np.divide(2 * tp, den, out=np.zeros_like(tp), where=den > 0)
+    return float(f1.mean())
+
+
 def score_fn(o, pred, detail=False, require_all=True):
     """o: OOF 프레임(ver 열 필요), pred: o 행 순서의 예측 라벨. 버전별 Macro F1을 VER_W(9:1:1)로 가중.
     기본은 3개 버전이 모두 있어야 한다 (빠진 버전을 조용히 재가중하지 않음)."""
@@ -65,7 +79,7 @@ def score_fn(o, pred, detail=False, require_all=True):
     for v in VER_W:
         m = ver == v
         if m.any():
-            s[v] = f1_score(y[m], pred[m], average="macro", labels=CLASSES)
+            s[v] = macro_f1(y[m], pred[m])
     tot = sum(VER_W[v] * s[v] for v in s) / sum(VER_W[v] for v in s)
     if not detail:
         return tot
