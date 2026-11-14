@@ -12,9 +12,26 @@ import pandas as pd
 from .data import COND, KEY, SENSORS, T, Y
 from .images import IMG_COLS
 
-PEAK_COLS = ["meas_t1", "meas_t2", "thermal_t", "meas_p"]  # 최고점 이후 경과시간 대상
+PEAK_COLS = ["meas_t1", "meas_t2", "thermal_t", "meas_p", "meas_v"]  # 최고점 이후 경과시간 대상
 WINDOWS = [30, 60, 120]  # 초
 META = ["sample_id", KEY, Y, "grp", "ver"]
+GASES = ["meas_ch4", "meas_co", "meas_co2", "meas_hcn", "meas_hcl", "meas_hf",
+         "meas_n2o", "meas_no", "meas_no2", "meas_so2"]
+
+# 열폭주 '사건' 정의 — 단계별 센서 중앙값(EDA)과 열폭주 문헌의 단계 구분에 근거한 고정 임계값.
+#   1 정상 → 2 벤팅(압력 급등) → 3 가열 지속 → 4 내부단락(전압 0V) → 5 열화상 온도 급락 → 6 열폭주(고온)
+# 각 사건에 대해 '지금까지 발생했나'와 '처음 발생 후 경과시간'을 만든다 (과거 정보만 사용).
+EVENTS = (
+    [(f"p_jump{x}", "p_d0", ">", x) for x in (5, 10, 20, 35)]          # 벤팅: 압력 급등
+    + [(f"v_below{x}", "v", "<", x) for x in (3.9, 3.5, 2.0, 0.5)]     # 전압 저하 → 내부단락
+    + [(f"v_drop{x}", "v_dropmax", ">", x) for x in (0.2, 0.5, 1.5)]   # 최고 전압 대비 하락
+    + [(f"v_over{x}", "v", ">", x) for x in (4.3, 4.6, 5.0)]           # 과충전: 정격 초과
+    + [(f"t1_above{x}", "t1", ">", x) for x in (50, 80, 110, 150, 250)]
+    + [(f"t2_above{x}", "t2", ">", x) for x in (60, 90, 120, 200)]
+    + [(f"t1_rate{x}", "t1_rate30", ">", x) for x in (0.2, 0.5, 1.0, 3.0)]  # °C/s, 열폭주 트리거
+    + [(f"th_drop{x}", "th_dropmax", ">", x) for x in (15, 30, 60)]   # 열화상 온도 급락 (5단계)
+    + [(f"gas{x}", "gas_d0", ">", x) for x in (1, 5, 20)]              # 가스 첫 검출
+)
 
 
 def _group_feats(t, X):
@@ -51,6 +68,37 @@ def _peak_feats(t, X):
     return t[:, None] - t[last]
 
 
+def _event_feats(t, g):
+    """EVENTS 각각에 대해 발생 여부(0/1)와 첫 발생 후 경과시간(미발생이면 NaN). 과거만 사용."""
+    col = lambda c: g[c].to_numpy(float) if c in g.columns else np.full(len(t), np.nan)
+    v, t1, t2, p, th = col("meas_v"), col("meas_t1"), col("meas_t2"), col("meas_p"), col("thermal_t")
+    gas = g[[c for c in GASES if c in g.columns]].to_numpy(float)
+    with np.errstate(invalid="ignore"):
+        j = np.searchsorted(t, t - 30, side="left")
+        dt = t - t[j]
+        sig = {
+            "v": v, "t1": t1, "t2": t2,
+            "p_d0": p - p[0],
+            "v_dropmax": np.fmax.accumulate(v) - v,
+            "th_dropmax": np.fmax.accumulate(th) - th,
+            "t1_rate30": np.where(dt > 0, (t1 - t1[j]) / np.where(dt > 0, dt, 1), np.nan),
+            "gas_d0": np.nansum(gas - gas[0], axis=1) if gas.size else np.full(len(t), np.nan),
+        }
+    out, n_occ = {}, np.zeros(len(t))
+    idx = np.arange(len(t))
+    for name, s, op, x in EVENTS:
+        with np.errstate(invalid="ignore"):
+            hit = (sig[s] > x) if op == ">" else (sig[s] < x)
+        occ = np.maximum.accumulate(np.nan_to_num(hit, nan=0).astype(bool))
+        first = np.where(occ.any(), np.argmax(occ), len(t))
+        out[f"ev_{name}"] = occ.astype(float)
+        out[f"ev_{name}__t_since"] = np.where(idx >= first, t - t[min(first, len(t) - 1)], np.nan)
+        n_occ += occ
+    out["ev_count"] = n_occ
+    out["th_minus_t1"] = th - t1  # 5단계: 열화상 온도가 표면 온도보다 크게 낮아짐
+    return out
+
+
 def make_features(df):
     """(실험, 시간) 순으로 정렬된 피처 DataFrame을 반환. sample_id로 원래 행과 매칭."""
     df = df.sort_values([KEY, T], kind="stable").reset_index(drop=True)
@@ -69,6 +117,7 @@ def make_features(df):
             cols[f"{c}__t_since_peak"] = P[:, a]
         cols["t1_minus_t2"] = g["meas_t1"].to_numpy(float) - g["meas_t2"].to_numpy(float)
         cols["t1_minus_amb"] = g["meas_t1"].to_numpy(float) - g["atmp_t"].to_numpy(float)
+        cols.update(_event_feats(t, g))
         blocks.append(pd.DataFrame(cols, index=g.index))
     F = pd.concat(blocks).loc[df.index]
     meta = [c for c in META if c in df.columns] + [T] + COND

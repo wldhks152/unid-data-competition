@@ -58,7 +58,9 @@ def main():
     t0 = time.time()
     F = pd.concat([make_features(subsample(tv, k, o)) for k, o in TRAIN_VERSIONS], ignore_index=True)
     feats = feature_columns(F)
-    print(f"  {len(F):,} rows × {len(feats)} features ({time.time() - t0:.0f}s)")
+    const = [c for c in feats if F[c].nunique(dropna=True) <= 1]  # 상수·전부 결측 피처 제외
+    feats = [c for c in feats if c not in const]
+    print(f"  {len(F):,} rows × {len(feats)} features ({time.time() - t0:.0f}s), 상수 피처 {len(const)}개 제외")
 
     print(f"\n[4] {a.folds}-fold CV (실험 단위 분할) — fold 모델들을 최종 앙상블로 사용")
     ex = F[F.ver == "k1o0"].groupby("grp")[COND].first()
