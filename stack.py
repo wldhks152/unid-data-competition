@@ -35,7 +35,7 @@ def main():
     ap.add_argument("--seed", type=int, default=42, help="모델 시드 (fold 분할은 src/evaluation.py에 고정)")
     ap.add_argument("--cat_iters", type=int, default=1500)
     ap.add_argument("--cache_dir", default="cache")
-    ap.add_argument("--gpu", action="store_true", help="cat 멤버를 GPU로 학습")
+    ap.add_argument("--cpu", action="store_true", help="cat 멤버를 CPU로 학습 (기본: GPU)")
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
     os.makedirs(a.out_dir, exist_ok=True)
@@ -72,7 +72,7 @@ def main():
         for fold, (tr_g, va_g) in enumerate(splits):
             t0 = time.time()
             m = fit_member(kind, a.seed + fold + seed_off, trn_F=F[F.grp.isin(tr_g)], feats=feats,
-                           trn_raw=tv[tv[KEY].isin(tr_g)], timg=timg, gpu=a.gpu, cat_iters=a.cat_iters)
+                           trn_raw=tv[tv[KEY].isin(tr_g)], timg=timg, gpu=not a.cpu, cat_iters=a.cat_iters)
             models.append(m)
             msg = []
             for k, o in EVAL_VERSIONS:
