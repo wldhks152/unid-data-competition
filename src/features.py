@@ -11,6 +11,7 @@ import pandas as pd
 
 from .data import COND, KEY, SENSORS, T, Y
 from .images import IMG_COLS
+from .physics import parse_groups, physics_features
 
 PEAK_COLS = ["meas_t1", "meas_t2", "thermal_t", "meas_p", "meas_v"]  # 최고점 이후 경과시간 대상
 WINDOWS = [30, 60, 120]  # 초
@@ -102,8 +103,10 @@ def _event_feats(t, g):
     return out
 
 
-def make_features(df):
-    """(실험, 시간) 순으로 정렬된 피처 DataFrame을 반환. sample_id로 원래 행과 매칭."""
+def make_features(df, physics=None):
+    """(실험, 시간) 순으로 정렬된 피처 DataFrame을 반환. sample_id로 원래 행과 매칭.
+    physics: 벤팅 기준 물리 피처 그룹 (src/physics.py). None=끔(기존과 동일), "all", "vent,dip" 등."""
+    physics = parse_groups(physics)
     df = df.sort_values([KEY, T], kind="stable").reset_index(drop=True)
     sens = [c for c in SENSORS if c in df.columns]
     imgs = [c for c in IMG_COLS if c in df.columns]  # 이미지는 가볍게: 현재값 + 첫 프레임 대비 변화만
@@ -122,6 +125,7 @@ def make_features(df):
         cols["t1_minus_t2"] = g["meas_t1"].to_numpy(float) - g["meas_t2"].to_numpy(float)
         cols["t1_minus_amb"] = g["meas_t1"].to_numpy(float) - g["atmp_t"].to_numpy(float)
         cols.update(_event_feats(t, g))
+        cols.update(physics_features(t, g, physics))
         if imgs:
             I = g[imgs].to_numpy(float)
             for a, c in enumerate(imgs):
@@ -137,18 +141,28 @@ def feature_columns(F):
     return [c for c in F.columns if c not in META]
 
 
-def causality_check(df, n_exp=5, seed=0):
-    """시계열을 임의 지점에서 잘라 다시 계산해도 앞부분 피처가 같은지 확인. 다르면 종료."""
+def causality_check(df, n_exp=5, seed=0, physics="all"):
+    """시계열을 임의 지점에서 잘라 다시 계산해도 앞부분 피처가 같은지 확인. 다르면 종료.
+    물리 피처(기본 전체 그룹)도 함께 검사한다. 벤팅 기준점(t1 ≥ 45°C) 직전·직후에서도 자른다."""
+    from .physics import VENT_T1
     rng = np.random.default_rng(seed)
     exps = rng.choice(df[KEY].unique(), size=min(n_exp, df[KEY].nunique()), replace=False)
+    n_cuts = 0
     for e in exps:
         g = df[df[KEY] == e].sort_values(T)
-        cut = int(rng.integers(2, max(3, len(g))))
-        full = make_features(g).set_index("sample_id")
-        part = make_features(g.iloc[:cut]).set_index("sample_id")
-        cols = feature_columns(part.reset_index())
-        bad = [c for c in cols
-               if not np.allclose(full.loc[part.index, c], part[c], equal_nan=True)]
-        if bad:
-            sys.exit(f"[누수!] 미래 정보에 의존하는 피처: {bad[:10]}")
-    print(f"  피처 누수 검사 OK — {len(exps)}개 실험을 임의 지점에서 잘라도 과거 피처 동일")
+        cuts = {int(rng.integers(2, max(3, len(g))))}
+        hit = np.flatnonzero(g["meas_t1"].to_numpy(float) >= VENT_T1) if "meas_t1" in g.columns else []
+        if len(hit):
+            iv = int(hit[0])
+            cuts |= {c for c in (iv, iv + 1, iv + 2, iv + 10) if 2 <= c < len(g)}
+        full = make_features(g, physics).set_index("sample_id")
+        for cut in sorted(cuts):
+            part = make_features(g.iloc[:cut], physics).set_index("sample_id")
+            cols = feature_columns(part.reset_index())
+            bad = [c for c in cols
+                   if not np.allclose(full.loc[part.index, c], part[c], equal_nan=True)]
+            if bad:
+                sys.exit(f"[누수!] 미래 정보에 의존하는 피처: {bad[:10]}")
+            n_cuts += 1
+    print(f"  피처 누수 검사 OK — {len(exps)}개 실험, {n_cuts}개 절단 지점(벤팅 전후 포함)에서 과거 피처 동일"
+          + (f" · 물리 피처 {parse_groups(physics)} 포함" if parse_groups(physics) else ""))
