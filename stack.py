@@ -36,9 +36,12 @@ def main():
     ap.add_argument("--seed", type=int, default=42, help="모델 시드 (fold 분할은 src/evaluation.py에 고정)")
     ap.add_argument("--cat_iters", type=int, default=1500)
     ap.add_argument("--cache_dir", default="cache")
-    ap.add_argument("--cpu", action="store_true", help="cat 멤버를 CPU로 학습 (기본: GPU)")
+    ap.add_argument("--cpu", action="store_true", help="CPU로 학습 (기본: GPU — LightGBM은 설치 빌드가 지원할 때, CatBoost·ResNet18은 항상)")
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
+    if a.cpu:
+        from src.model import DEVICE
+        DEVICE["prefer"] = "cpu"
     os.makedirs(a.out_dir, exist_ok=True)
 
     print("[1] 데이터 로드 (Train + Validation)")

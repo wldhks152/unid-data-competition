@@ -56,7 +56,11 @@ def main():
     ap.add_argument("--no_catboost", action="store_true", help="팀원 CatBoost 앙상블 끄기 (LightGBM 단독)")
     ap.add_argument("--holdout_valid", action="store_true",
                     help="비교용: Train만으로 학습하고 제공 Validation(19개 실험)으로 평가. 제출용 아님")
+    ap.add_argument("--cpu", action="store_true", help="CPU로 학습 (기본: GPU, LightGBM은 설치 빌드가 지원할 때)")
     a = ap.parse_args()
+    if a.cpu:
+        from src.model import DEVICE
+        DEVICE["prefer"] = "cpu"
     random.seed(a.seed)
     np.random.seed(a.seed)
     stem = os.path.splitext(a.model_out)[0]

@@ -6,16 +6,46 @@ from sklearn.metrics import f1_score
 from .data import KEY, T
 
 
+DEVICE = {"prefer": "gpu"}  # 학습 기본은 GPU. 스크립트의 --cpu가 "cpu"로 바꾼다.
+_LGB_DEV = {}
+
+
+def lgb_device():
+    """설치된 LightGBM이 GPU(cuda 또는 OpenCL gpu)를 지원하면 그 장치, 아니면 cpu. 한 번만 시험한다."""
+    if DEVICE["prefer"] == "cpu":
+        return "cpu"
+    if "dev" not in _LGB_DEV:
+        _LGB_DEV["dev"] = "cpu"
+        try:
+            import lightgbm as lgb
+            X = np.random.default_rng(0).random((256, 4))
+            y = (X[:, 0] > 0.5).astype(int)
+            for dev in ("cuda", "gpu"):
+                try:
+                    lgb.LGBMClassifier(n_estimators=2, device_type=dev, verbose=-1).fit(X, y)
+                    _LGB_DEV["dev"] = dev
+                    break
+                except Exception as e:  # 이 빌드에 해당 장치 지원 없음
+                    err = f"{type(e).__name__}: {str(e).splitlines()[0][:80]}"
+            if _LGB_DEV["dev"] == "cpu":
+                print(f"  [안내] 설치된 LightGBM이 GPU를 지원하지 않아 CPU로 학습 ({err})")
+        except ImportError:
+            pass
+        print(f"  LightGBM 장치: {_LGB_DEV['dev']}")
+    return _LGB_DEV["dev"]
+
+
 def make_model(seed, balanced=True):
-    """lightgbm이 있으면 LGBM, 없으면 sklearn HistGradientBoosting (동작 확인용)."""
+    """lightgbm이 있으면 LGBM(GPU 가능하면 GPU), 없으면 sklearn HistGradientBoosting (동작 확인용)."""
     cw = "balanced" if balanced else None
     try:
         import lightgbm as lgb
+        dev = lgb_device()
         return lgb.LGBMClassifier(
             n_estimators=700, learning_rate=0.03, num_leaves=31, min_child_samples=40,
             subsample=0.8, subsample_freq=1, colsample_bytree=0.6, reg_lambda=1.0,
-            class_weight=cw, random_state=seed, deterministic=True, force_col_wise=True,
-            verbose=-1, n_jobs=-1,
+            class_weight=cw, random_state=seed, deterministic=True,
+            verbose=-1, n_jobs=-1, device_type=dev, **({"force_col_wise": True} if dev == "cpu" else {}),
         )
     except ImportError:
         from sklearn.ensemble import HistGradientBoostingClassifier

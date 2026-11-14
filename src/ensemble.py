@@ -29,10 +29,19 @@ def team_image_features(df, image_root, cache_dir=None, tag=None, n_jobs=4):
     return out
 
 
+def catboost_to_gpu(pipe):
+    """팀원 파이프라인의 CatBoost를 GPU 학습으로 바꾼다 (src.model.DEVICE가 cpu면 그대로). 추론은 어느 쪽이든 CPU."""
+    from .model import DEVICE
+    clf = pipe.named_steps.get("classifier")
+    if DEVICE["prefer"] != "cpu" and type(clf).__name__ == "CatBoostClassifier":
+        pipe.set_params(classifier__task_type="GPU", classifier__devices="0")
+    return pipe
+
+
 def fit_team(df, img, thread_count=None):
-    """팀원 CatBoost 파이프라인을 df의 행으로 학습."""
+    """팀원 CatBoost 파이프라인을 df의 행으로 학습 (GPU 기본)."""
     X = TM.build_features(df, img)
-    pipe = TM.build_model(thread_count=thread_count or os.cpu_count() or 4)
+    pipe = catboost_to_gpu(TM.build_model(thread_count=thread_count or os.cpu_count() or 4))
     pipe.fit(X, df["label"].astype(int).to_numpy())
     return {"features": list(X.columns), "pipeline": pipe}
 
