@@ -19,7 +19,7 @@ from src.model import cummax_pp, tune_class_weights
 from src.postprocess import estimate_transitions, hmm_filter
 
 VER_W = {"k1o0": 9, "k2o0": 1, "k3o0": 1}  # Test 실험 간격 구성
-TAUS = [0.3, 0.5, 0.75, 1.0]
+TAUS = [0.5, 1.0, 1.5, 2.0, 3.0]  # 클수록 모델 확률을 더 믿음 (단계 전환이 빨라짐)
 BACKS = [0.0, 1e-3, 1e-2]
 
 
@@ -94,7 +94,11 @@ def main():
           "oof": {n: {k: round(v, 4) for k, v in s.items()} for n, s in rows}}
     with open(os.path.join(run, "pp.json"), "w", encoding="utf-8") as f:
         json.dump(pp, f, ensure_ascii=False, indent=1)
-    print(f"\n저장 → {run}/pp.json   (적용: python predict.py --run {a.run} --pp hmm)")
+    pp_opt = "hmm" if win.startswith("hmm") else ("cummax" if "cummax" in win else "none")
+    use_w = win in ("+w", "+w+cummax", "hmm+w")
+    print(f"\n저장 → {run}/pp.json")
+    print(f"추천 제출: python predict.py --data data --run {a.run} --pp {pp_opt}"
+          + ("" if use_w else " --no-tune"))
 
 
 if __name__ == "__main__":
