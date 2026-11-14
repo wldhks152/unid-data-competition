@@ -64,6 +64,7 @@ def main():
                     help="클래스별 LightGBM 비율: 1~3단계 LO, 4~6단계 HI")
     ap.add_argument("--w", type=float, nargs="+", default=None, help="클래스 배율 직접 지정 (6개)")
     ap.add_argument("--w_power", type=float, default=None, help="클래스 배율을 w**p로 완화 (0=배율 없음, 1=그대로)")
+    ap.add_argument("--only", nargs="+", default=None, help="스태킹 멤버 중 이것만 같은 비율로 사용 (예: team rn18)")
     a = ap.parse_args()
 
     bundle = joblib.load(a.model)
@@ -94,6 +95,11 @@ def main():
         elif a.alpha < 1:
             sys.exit("[오류] 이 model.joblib에는 CatBoost가 없어 --alpha < 1을 쓸 수 없습니다.")
     is_stack = "members" in bundle
+    if a.only:
+        if not is_stack or any(n not in bundle["members"] for n in a.only):
+            sys.exit(f"[오류] --only 멤버가 bundle에 없습니다 (있는 멤버: {list(bundle.get('members', {}))})")
+        bundle["members"] = {n: bundle["members"][n] for n in a.only}
+        bundle["blend"] = {n: np.full(len(bundle["classes"]), 1 / len(a.only)) for n in a.only}
     needs_team = "team" in bundle or (is_stack and any(m["kind"] == "team" or m.get("module") == "src.rn18"
                                                        for m in bundle["members"].values()))
     ens = ("스태킹(" + ", ".join(f"{n}={np.round(np.asarray(w), 2).tolist()}" for n, w in bundle["blend"].items()) + ")") if is_stack else f"앙상블(LightGBM 비율 {np.round(bundle['alpha'], 2).tolist()})" if "team" in bundle else "LightGBM 단독"
