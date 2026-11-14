@@ -16,6 +16,8 @@ kind
   team : 팀원 CatBoost v1 (원본 5초 행 + 팀원 피처 33개)
   rn18s: rn18 + 현재 행 센서 13개 (팀원 v2)
   dino : rn18s와 같되 이미지 특징을 DINOv2-small 384차원으로 (src/dino.py)
+  rn18d: rn18s + ResNet18 임베딩의 시간 변화 피처 14개
+  dinod: dino + 이미지 임베딩의 시간 변화 피처 14개 (src/rn18.emb_dynamics), dinodf: + 첫 프레임 대비 임베딩 차이 384개
   r50  : rn18s와 같되 이미지 특징을 ImageNet ResNet50 2048차원으로 (src/r50.py)
   s23  : 2↔3단계 전용 이진 LightGBM (2·3단계 행만 학습, P(3 | 2 또는 3)). OOF는 [0, 1-q, q, 0, 0, 0].
          블렌드 멤버가 아니라 bundle["refine23"]로 붙여, 블렌드의 2·3단계 확률 합을 q로 다시 나눈다.
@@ -213,9 +215,10 @@ def fit_member(kind, seed, trn_F=None, feats=None, trn_raw=None, timg=None, gpu=
         sel = trn_F["label"].isin([2, 3]).to_numpy()
         m.fit(trn_F.loc[sel, feats], (trn_F.loc[sel, "label"] == 3).astype(int))
         return m
-    if kind in ("rn18", "rn18s", "dino", "r50"):
+    if kind in ("rn18", "rn18s", "rn18d", "dino", "r50", "dinod", "dinodf", "dinod2"):  # dinod: + 이미지 시간 변화, dinodf: + 첫 프레임 대비 차이
         from . import rn18
-        return rn18.fit(trn_raw, timg, emb, gpu=gpu, sensors=kind != "rn18", seed=seed if seed_variant else None)
+        return rn18.fit(trn_raw, timg, emb, gpu=gpu, sensors=kind != "rn18", seed=seed if seed_variant else None,
+                        dyn={"dinod": 1, "rn18d": 1, "dinodf": 2, "dinod2": 3}.get(kind, 0))
     raise ValueError(kind)
 
 
@@ -241,7 +244,7 @@ def predict_member(kind, model, F=None, feats=None, raw=None, timg=None, emb=Non
         P = np.zeros((len(F), len(CLASSES)))
         P[:, 1], P[:, 2] = 1 - q, q
         return P
-    if kind in ("rn18", "rn18s", "dino", "r50"):
+    if kind in ("rn18", "rn18s", "rn18d", "dino", "r50", "dinod", "dinodf", "dinod2"):
         from . import rn18
         return rn18.proba(model, raw, timg, emb, F.sample_id.values)
     raise ValueError(kind)

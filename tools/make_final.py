@@ -22,7 +22,8 @@ def main():
     ap.add_argument("--src", default=None, help="blend.py가 만든 bundle. 없으면 --members에 이름=멤버.joblib 경로")
     ap.add_argument("--members", nargs="+", required=True)
     ap.add_argument("--weights", nargs="+", type=float, required=True, help="멤버별 비율 (모든 단계 공통, 합 1)")
-    ap.add_argument("--post", default="cummax", choices=["raw", "cummax", "cummax2", "cummax3"])
+    ap.add_argument("--post", default="cummax", help="raw, cummax, cummax2, cummax3 또는 --post_module의 POSTS 이름 (예: late)")
+    ap.add_argument("--post_module", default=None, help="후처리 모듈 (예: src.late) — POSTS[--post](frame, P, w) -> 라벨")
     ap.add_argument("--out", default="model.joblib")
     ap.add_argument("--refine23", default=None, help="2↔3 전용 멤버 파일 (예: runs/stack_trv/s23.joblib)")
     ap.add_argument("--refine_alpha", type=float, default=0.5, help="2↔3 전용 모델 반영 비율 (0~1)")
@@ -51,7 +52,12 @@ def main():
     b["feats"] = sorted({c for mem in list(b["members"].values()) + ([b["refine23"]] if a.refine23 else [])
                          for c in (mem.get("feats") or [])})
     b["w"] = np.ones(len(b["classes"]))
-    b["post"] = {"method": "none" if a.post == "raw" else a.post, "use_w": False, "hmm": None, "gate": "none", "module": None}
+    if a.post_module:
+        import importlib
+        assert a.post in importlib.import_module(a.post_module).POSTS, f"{a.post_module}.POSTS에 {a.post}가 없어요"
+    else:
+        assert a.post in ("raw", "cummax", "cummax2", "cummax3"), "--post_module 없이 쓸 수 있는 후처리가 아니에요"
+    b["post"] = {"method": "none" if a.post == "raw" else a.post, "use_w": False, "hmm": None, "gate": "none", "module": a.post_module}
     joblib.dump(b, a.out, compress=3)
     print(f"저장 → {a.out} ({os.path.getsize(a.out) / 1e6:.1f}MB)  멤버 {dict(zip(a.members, a.weights))}  후처리 {a.post}")
 

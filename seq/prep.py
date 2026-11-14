@@ -54,8 +54,32 @@ def _extra_channels(t, g):
     return np.stack(cols, 1).astype(np.float32)
 
 
-def build_sequences(df, extra=False):
-    """df(여러 실험, 임의 간격) → 실험별 dict 리스트. extra=True면 _extra_channels를 뒤에 붙인다.
+def make_img(emb, n_comp=24, fit_ids=None):
+    """이미지 채널 준비물. emb: sample_id 인덱스의 DINOv2 임베딩 DataFrame.
+    PCA(평균·축)는 fit_ids(Train 이미지)로만 구한다 — 라벨을 쓰지 않는 전처리 통계."""
+    E = emb.to_numpy(np.float32)
+    ids = np.asarray(emb.index).astype(str)
+    pos = {s: i for i, s in enumerate(ids)}
+    sel = np.array([pos[str(s)] for s in fit_ids]) if fit_ids is not None else np.arange(len(E))
+    X = E[sel].astype(np.float64)
+    mean = X.mean(0)
+    w, V = np.linalg.eigh(np.cov(X - mean, rowvar=False))
+    W = V[:, np.argsort(w)[::-1][:n_comp]]
+    return {"E": E, "pos": pos, "mean": mean, "W": W}
+
+
+def _img_channels(g, t, img):
+    """이미지 채널 (img가 있을 때만): 임베딩 PCA 성분의 현재값 · 첫 프레임 대비 변화 + 시간 변화 피처(src.rn18.emb_dynamics).
+    모두 같은 실험의 현재·과거 프레임만 사용. 행렬곱은 einsum으로 행마다 따로 계산한다."""
+    from src.rn18 import DYN_COLS, emb_dynamics
+    E = img["E"][[img["pos"][str(s)] for s in g["sample_id"].to_numpy()]]
+    Z = np.einsum("ij,jk->ik", E.astype(np.float64) - img["mean"], img["W"])
+    dyn = emb_dynamics(pd.DataFrame({KEY: "e", T: t}), E)[list(DYN_COLS)].to_numpy(np.float64)
+    return np.concatenate([Z, Z - Z[0], dyn], axis=1).astype(np.float32)
+
+
+def build_sequences(df, extra=False, img=None):
+    """df(여러 실험, 임의 간격) → 실험별 dict 리스트. extra=True면 _extra_channels를, img가 있으면 _img_channels를 뒤에 붙인다.
     각 dict: key, X (L, C) float32 (표준화 전), y (L,) 또는 None, sample_id (L,), t (L,), ver, grp"""
     df = df.sort_values([KEY, T], kind="stable")
     sens = [c for c in SENSORS if c in df.columns]
@@ -81,6 +105,8 @@ def build_sequences(df, extra=False):
             X[:, 3 * len(sens) + 2 + i] = conds[c].loc[g.index].to_numpy()
         if extra:
             X = np.concatenate([X, _extra_channels(t, g)], axis=1)
+        if img is not None:
+            X = np.concatenate([X, _img_channels(g, t, img)], axis=1)
         out.append({
             "key": e, "X": X, "t": t,
             "y": g[Y].to_numpy(int) if Y in g.columns else None,
