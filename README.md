@@ -1,136 +1,176 @@
-# 1팀 · ResNet18 이미지 특징 + 센서 + CatBoost v1
+# Uni-D 배터리 열폭주 6단계 분류
 
-기존 CatBoost v1을 보관하고, **같은 33개 특징에 고정 ResNet18 특징 512개만 추가**하는 비교 실험입니다.
-총 입력은 545개이며, 6단계 분류는 CatBoost가 수행합니다. ResNet18은 이미지 특징 추출만 하고 대회 데이터로 학습하지 않습니다.
-제공 서버에서 학습과 공식 제출 검사를 완료했습니다. 사용자 확인 기준 Public Macro F1은 **0.9156013487**입니다. 현재 후보 파일명은 **submission_resnet18_catboost_v1.csv**이며 최종 선택은 대회 사이트에서 별도로 확정합니다.
+**최종 모델: LightGBM(과거 방향 시계열·사건 피처) 0.4 + DINOv2 이미지 CatBoost 0.4 + 인과 GRU 시퀀스 모델 0.2 확률 앙상블 → 4~6단계 상승 재확인 후 단계 누적최대 후처리(`src/late.py`).** 열화상 이미지와 센서를 함께 사용해요. Public 0.9004177879 (제출 #34).
 
-## 비교 조건
+## 팀 정보
+- 팀명: 1팀
+- 최종 선택 제출 파일: `submission_team27_late.csv` (리더보드 제출 #34, Public 0.9004177879). `test.py`와 이 저장소의 `model.joblib`로 같은 파일이 재현돼요.
 
-| 항목 | 이번 설정 |
-|---|---|
-| 기존 특징 | 센서 5개 + 흑백 이미지 통계 6개 + 과거 30초 특징 21개 + relative_time_s 1개 = 33개 |
-| 새 특징 | 현재 RGB 이미지의 ResNet18 avgpool 특징 512개 |
-| 분류기 | CatBoost MultiClass, 600 trees, depth 6, learning rate 0.05, L2 3.0 |
-| 클래스 가중치 / 시드 | 없음 / 42 |
-| 분류기 실행 | CPU, 기본 4 threads |
-| 이미지 모델 | ImageNet 사전학습 ResNet18, 전체 동결, eval, float32 |
-| 특징 추출 | 기본 auto 장치; 아래 실행 예시는 CUDA를 명시. 고정 batch 1, CPU intra-op threads 1 |
-| 전처리 | 기존 median imputer + StandardScaler, fold의 학습 부분에서만 fit |
-| 검증 | Train의 experiment_id 기준 GroupKFold 5개 + 제공 Validation |
-| 저장 모델 학습 | Train만 사용. Validation/Test는 모델·전처리 학습에 사용하지 않음 |
-
-## 실행 결과
-
-| 모델 | Train GroupKFold Macro F1 | Validation Macro F1 | Public Macro F1 |
-|---|---:|---:|---:|
-| CatBoost v1 | 0.8732 ± 0.0300 | 0.7505 | 0.8827502081 |
-| ResNet18 + CatBoost v1 | **0.8820 ± 0.0369** | 0.7477 | **0.9156013487** |
-
-현재 모델의 fold별 Macro F1은 0.9009, 0.8962, 0.9106, 0.8932, 0.8091입니다.
-공식 check_submission.py 전체 통과를 사용자 실행 결과로 확인했습니다. 형식·반복 실행·최종 후보 파일 재현·행 순서 변경·실험 분리·미래 행 제거·이미지 사용 검사를 포함합니다.
-빈 이미지의 정확한 라벨 변경률은 이 문서에 별도로 기록하지 않았습니다.
-Public은 전체 Test 중 공개 평가 부분의 점수이며 Private 점수는 아직 확인하지 않았습니다.
-
-## 비교 실험 범위
-
-새 센서, 배터리 조건, 클래스 가중치, CatBoost 하이퍼파라미터는 이번 실험에서 추가로 바꾸지 않습니다.
-고정 사전학습 특징은 각 샘플별로 추출하므로 CV 전에 계산할 수 있지만, imputer와 scaler는 각 fold의 학습 부분에만 fit합니다.
-
-## 이미지 전처리
-
-RGB로 변환한 뒤 종횡비를 유지해 긴 변을 224픽셀로 맞춥니다. PIL BILINEAR 보간을 사용하고, 크기는 floor(value + 0.5)로 반올림합니다.
-224×224 캔버스 중앙에 넣으며 고정 RGB (124, 116, 104)로 여백을 채웁니다. 가운데를 잘라내지 않아 원본 이미지 전체를 유지합니다.
-float32 / 255 후 ImageNet mean (0.485, 0.456, 0.406), std (0.229, 0.224, 0.225)로 정규화합니다.
-랜덤 crop, flip, 색상 변경은 사용하지 않습니다. `encoder.py`의 TRANSFORM_SPEC과 가중치 manifest에 이 설정을 저장합니다.
-가색 영상의 픽셀을 실제 온도로 환산하는 과정은 없습니다.
-
-## 서버 실행 순서
-
-이 `uni_d_resnet18_catboost_v1` 폴더를 서버의 `/home/ubuntu/jaebok`에 올립니다.
-기존 CatBoost v1 폴더에 덮어쓰지 않고 새 폴더에서 실행합니다.
-학습과 추론은 대회 제공 서버에서만 수행합니다. 기존 tmux 터미널을 사용하세요.
-
-```bash
-source /home/ubuntu/venv/bin/activate
-cd /home/ubuntu/jaebok/uni_d_resnet18_catboost_v1
-python -c "import torch; print('PyTorch:', torch.__version__, 'CUDA:', torch.cuda.is_available())"
-nvidia-smi
-```
-
-제공 서버의 GPU 사용 상황을 팀원과 확인하고, CUDA가 True이면 학습을 시작합니다.
-기존 대회 venv에는 이전 실험의 6개 패키지와 GPU용 torch가 있으므로 추가 설치 명령이 필요하지 않습니다.
-torchvision 런타임은 사용하지 않습니다. 기존 GPU용 torch를 교체하는 설치는 하지 마세요.
-
-```bash
-python -u train.py --data_dir /home/ubuntu/data/battery_data_light --device cuda
-```
-
-첫 실행은 공식 ResNet18 가중치 약 45MB를 내려받습니다. 그다음 Train·Validation 이미지 특징 추출 진행 상황을 500장마다 출력합니다.
-특징 추출이 끝나면 GPU 메모리를 반환하고 CPU에서 CatBoost 교차검증과 최종 학습을 진행합니다. 입력 특징이 545개여서 이전 실험보다 학습 시간이 길 수 있습니다.
-CPU로 특징 추출하려면 처음 학습부터 `--device cpu`를 사용합니다. 추론도 학습 때 기록한 장치를 그대로 사용하며 자동으로 다른 장치로 전환하지 않습니다.
-
-## 추론과 공식 점검
-
-학습 완료 후 같은 폴더에서 실행합니다. `test.py`는 네트워크로 가중치를 받지 않고 저장된 로컬 가중치만 사용합니다.
-
-```bash
-python test.py --input /home/ubuntu/data/battery_data_light/test/test.csv --image_root /home/ubuntu/data/battery_data_light/test --output submission_resnet18_catboost_v1.csv
-python check_submission.py --data_dir /home/ubuntu/data/battery_data_light --final submission_resnet18_catboost_v1.csv
-```
-
-필수 인자는 --input, --image_root, --output 세 개뿐입니다. 기본 모델은 스크립트 폴더의 `weights/model.joblib`입니다.
-모델 옆의 encoder manifest와 모든 가중치 조각이 필요합니다. 다른 모델 위치는 선택 인자 `--model`로 지정할 수 있습니다.
-입력 CSV에 있는 행과 이미지만 읽으며, 입력 행 순서와 sample_id를 유지합니다. label은 1~6 정수입니다.
-Test fit, 전체 Test 캐시, 미래 관측, 다른 실험의 시계열 정보를 사용하지 않습니다.
-ResNet18은 eval·batch 1로 사용하고 결정적 연산을 켜며 TF32를 끕니다. 같은 서버 환경에서 공식 재현성 검사를 반드시 확인하세요.
-공식 점검은 추론을 7번 실행하므로 추가 시간이 걸립니다. 빈 이미지 검사에서 예측 라벨도 달라지는지 확인합니다.
-
-## 저장 파일과 GitHub 백업
-
-```text
-weights/
-├── model.joblib
-├── model.metrics.json
-└── encoder/
-    ├── manifest.json
-    ├── resnet18-f37072fd.pth.part001
-    ├── resnet18-f37072fd.pth.part002
-    └── resnet18-f37072fd.pth.part003
-```
-
-공식 가중치를 수치 변경 없이 바이너리 파일 조각으로 나눕니다. 각 조각은 최대 16MiB여서 GitHub 웹의 파일당 25MB 한도 안에 들어갑니다.
-추론 시 메모리에서 정확한 원본 바이트로 합치며 조각별·전체 SHA-256을 검사합니다. FP16 변환이나 손실 압축은 하지 않습니다.
-**GitHub 백업에는 코드와 weights 폴더 전체가 필요합니다.** model.joblib만 올리거나 encoder 조각 일부를 빼면 재현할 수 없습니다.
-데이터·이미지·예측 CSV·노트북 출력은 공개 저장소에 올리지 않습니다.
+## 개발 환경
+- OS: Ubuntu (대회 제공 GPU 서버)
+- Python: 3.10
+- GPU: NVIDIA GPU 1장 (학습: LightGBM OpenCL, CatBoost GPU, PyTorch CUDA). 추론은 GPU가 없으면 CPU로 동작
+- 라이브러리: `requirements.txt` 참고
 
 ## 파일 구성
+| 파일 | 역할 |
+|---|---|
+| `src/features.py` | 센서·이미지 통계에 대한 과거 방향 시계열 피처 생성, 누수 검사 |
+| `src/images.py` | 열화상 PNG의 의사색 팔레트 위치(보라→빨강→흰색)를 상대 온도로 환산해 분포 통계 계산 (사전학습 모델 없음) |
+| `src/model.py` | LightGBM 정의, Macro-F1용 클래스 배율 튜닝, 후처리(cummax) |
+| `src/late.py` | 최종 후처리: 4~6단계로 올라갈 때 재확인을 요구한 뒤 누적최대 (과거 행만 사용) |
+| `src/ensemble.py` | 우리 LightGBM과 팀원 CatBoost 확률을 α:(1-α)로 섞음 |
+| `src/team_catboost.py` | 팀원 CatBoost v1의 피처·모델 코드 (브랜치 `experiments/catboost_v1`에서 그대로 가져옴) |
+| `src/postprocess.py` | 단조 단계 HMM forward 필터 (선택적 후처리) |
+| `src/data.py` | 데이터 로드, 상수, 측정 간격 다운샘플링 |
+| `src/members.py` | 스태킹 멤버 학습·예측 (lgb, dino 등). 같은 실험 단위 fold 사용 |
+| `src/dino.py` | DINOv2-small 동결 임베딩 추출 (배치 크기 고정, 행 순서와 무관) |
+| `src/rn18.py`, `src/rn18_encoder.py` | 이미지 임베딩 + 팀원 피처 CatBoost 멤버 (dino 멤버도 이 코드로 추론) |
+| `seq/`, `train_seq.py` | 인과 GRU 시퀀스 모델 (과거 행만 보는 단방향 GRU) 학습·추론 |
+| `stack.py` | Train 5-fold + Validation 홀드아웃으로 멤버별 OOF와 가중치 저장 |
+| `tools/make_final.py` | 멤버·블렌드 가중치·후처리를 `model.joblib` 하나로 고정 |
+| `tools/eval_late.py` | 재확인 후처리 매개변수 비교 (Train 5-fold / Validation / 무작위 실험 묶음 승률) |
+| `tools/public_check.py` | Public 점수 패턴이 실험 몇 개의 우연으로 설명되는지 확인 |
+| `tools/check_submission.py` | 제출 전 재현성·이미지 사용 점검 |
+| `tools/report_metrics.py` | 발표용 단계별 F1·혼동행렬 (집계값만) |
+| `tools/get_dinov2.py` | DINOv2-small 가중치 내려받기 (revision 고정, 해시 기록) |
+| `train.py` | (초기 버전) Train+Validation K-fold 학습 |
+| `test.py` | 입력 CSV에 들어 있는 행만으로 추론하고 제출 파일 생성, 누수 자동 검사 |
+| `eda.py` | 데이터 점검 |
+| `model.joblib` | 최종 가중치 (LightGBM 6개 + DINOv2 CatBoost 6개 + GRU 6개 + 피처 목록 + 블렌드 가중치 + 후처리 설정 `late`) |
+| `weights/` | 동결 사전학습 이미지 인코더 가중치 (`dinov2-small/`, `encoder/`=ResNet18) |
 
-- model.py: 기존 33개와 ResNet18 512개 특징 결합, 검증, 분류기 연결
-- baseline_features.py: 기존 CatBoost v1의 특징·전처리·분류기 코드
-- encoder.py: ResNet18 구현, 전처리, 공식 가중치 준비, 오프라인 검증·추출
-- train.py / test.py: 학습 및 재학습 없는 추론 진입점
-- check_submission.py: 운영진이 제공한 점검 스크립트
-- requirements.txt: 기존 실제 환경의 6개 패키지 버전과 버전을 고정하지 않은 torch
-- third_party/LICENSE.torchvision: ResNet18 구현의 라이선스 고지
+## 최종 모델 구성
+| 멤버 | 가중치 | 입력 | 모델 |
+|---|---|---|---|
+| `lgb` | 0.4 | 센서 기반 과거 방향 시계열·사건 피처 306개 (이미지는 `dino` 멤버가 담당) (아래 "시계열 피처 구성") | LightGBM, 5/10/15초 솎아낸 행으로 증강 학습 |
+| `dino` | 0.4 | 팀원 CatBoost v1 피처 33개 + 현재 행 센서 13개 + 열화상 DINOv2-small 임베딩 384차원 | CatBoost (GPU) |
+| `seq_gru` | 0.2 | 실험별 센서 시퀀스 (현재값·첫 관측 대비 변화·직전 대비 변화율, Δt, 경과시간, 실험 조건) | 단방향 2층 GRU (hidden 128), 처음부터 학습. 각 시점 출력은 그 시점까지의 행만 봄 |
 
-실제 Python·OS·패키지 버전, GPU, CUDA/cuDNN, 특징 추출 장치·설정, fold별 점수, 단계별 F1, 혼동행렬과 공식 가중치의 전체 SHA-256은 `weights/model.metrics.json`에 기록합니다.
+- 세 멤버의 클래스 확률을 위 가중치로 더한 뒤 각 행의 argmax를 구해요.
+- **후처리(`late`)**: 4단계 이상으로 올라가려면 그 단계 이상일 확률의 합이 0.75 이상이거나, 직전 관측(15초 이내)의 argmax도 그 단계 이상이어야 해요. 1~3단계와 실험의 첫 관측은 argmax 그대로예요. 그다음 실험 안에서 누적 최댓값을 최종 단계로 써요. 한 행만 튀어서 높은 단계로 굳는 것을 막는 장치이고, 현재와 직전 행만 사용해요.
+- 후처리 아이디어는 팀원 제출 #34(브랜치 `submission/34-team27-late`)에서 왔고, `src/late.py`는 같은 규칙을 매개변수로 일반화한 구현이에요. 같은 Test 제출 파일을 바이트 단위로 재현하는 것을 확인했어요(SHA-256 `f0068bef…`).
+- 각 멤버는 fold 모델 5개 + Train 전체 모델 1개(GRU는 fold마다 같은 설정)의 확률 평균으로 추론해요.
+- `model.joblib`에 세 멤버의 가중치, 피처 목록, 블렌드 가중치, 후처리 설정이 모두 들어 있어요. 재학습 없이 `test.py`만으로 결과를 재현해요.
 
-## 사전학습 모델 출처·버전·라이선스
+## 실행 방법
+```bash
+pip install -r requirements.txt
+python tools/get_dinov2.py          # DINOv2-small 가중치 1회 내려받기 (저장소에 이미 포함되어 있으면 생략)
 
-- 모델 / 가중치 버전: **ResNet18 / ResNet18_Weights.IMAGENET1K_V1** (ImageNet-1K 사전학습)
-- 공식 모델 안내: https://docs.pytorch.org/vision/stable/models/generated/torchvision.models.resnet18
-- 공식 가중치 URL: https://download.pytorch.org/models/resnet18-f37072fd.pth
-- 고정 파일명 / 공식 해시 접두부: resnet18-f37072fd.pth / f37072fd. 실제 전체 SHA-256은 준비 후 manifest와 metrics에 저장합니다.
-- 구현 출처: torchvision의 ResNet18 계층·state_dict 키와 호환되게 torch.nn으로 구현했습니다. torchvision을 설치하지 않고도 공식 체크포인트를 strict load합니다.
-- 구현 라이선스: torchvision **BSD-3-Clause**. 전문은 third_party/LICENSE.torchvision에 포함했습니다. 공식 출처: https://github.com/pytorch/vision/blob/main/LICENSE
-- 사전학습 가중치는 학습 데이터셋에서 유래한 별도 이용 조건이 적용될 수 있습니다. 구현의 BSD 라이선스가 가중치·ImageNet 데이터의 모든 이용 조건을 대신한다는 주장은 하지 않습니다. torchvision 안내: https://github.com/pytorch/vision#pre-trained-model-license
+# 학습 (Train만 학습, Validation은 홀드아웃)
+python stack.py --data_dir <battery_data_light 경로> --splits train --holdout_valid \
+                --members lgb dino --out_dir runs/stack_trv
+python train_seq.py --data_dir <battery_data_light 경로> --model gru --out_dir runs/stack_trv \
+                    --folds_json runs/stack_trv/folds.json --holdout_valid
+python tools/make_final.py --members lgb=runs/stack_trv/lgb.joblib dino=runs/stack_trv/dino.joblib \
+                           seq_gru=runs/stack_trv/seq_gru.joblib --weights 0.4 0.4 0.2 \
+                           --post late --post_module src.late --out model.joblib
 
-대회 시작 전 공개된 범용 사전학습 모델만 사용하며, 외부 데이터를 추가하거나 외부 추론 API에 대회 데이터를 보내지 않습니다.
-OT 기준 최종 마감은 11월 15일 13:00 리더보드, 13:30 코드·PPT 메일 제출입니다.
+# 추론
+python test.py --input <battery_data_light 경로>/test/test.csv \
+               --image_root <battery_data_light 경로>/test \
+               --model model.joblib --output submission.csv \
+               --sample_submission <battery_data_light 경로>/sample_submission.csv
+```
+- `test.py`는 실행할 때마다 자동으로 누수 검사를 해요. 일부 실험을 임의 지점에서 잘라 다시 예측하고, 남은 행의 예측이 같은지 확인해요.
+- 입력 CSV가 잘려 있으면 `sample_submission` 순서를 따르되 **입력에 있는 행만** 출력해요.
 
-## 작성 시 소프트웨어 점검 범위
+## 학습·검증 구성
+- **학습 데이터: Train 실험만.** 제공 Validation 19개 실험은 학습에 한 번도 넣지 않고 마지막 홀드아웃으로만 썼어요.
+  - Train+Validation을 모두 학습에 넣은 버전은 Public 점수가 매번 더 낮았어요 (예: 0.8773 vs Train만 0.8879). 그래서 Validation은 모델 선택 기준으로 남겼어요.
+- **검증 방법**
+  1. Train 실험 단위 Stratified 5-fold (층화 기준 tr_method×bat_class, 칸이 너무 작으면 tr_method, `runs/stack_trv/folds.json`). 같은 실험의 행이 학습과 검증에 동시에 들어가지 않아요.
+  2. Validation 홀드아웃: Train 전체로 학습한 모델로 Validation 19개 실험을 예측 (6번째 fold).
+  - Test에는 5/10/15초 간격이 섞여 있어요. 그래서 검증 실험을 10초·15초로 솎아낸 버전으로도 평가하고, 9:1:1로 가중 평균해요.
+- **모델 선택 기준**: Train 5-fold, Validation 홀드아웃 두 점수 중 **낮은 쪽**이 가장 높은 조합. Public은 Test의 30%·11개 실험이라 변동이 커서 보조 지표로만 썼어요.
 
-합성 이미지로 RGB·padding·정규화, 가중치 조각 누락·변조 검출을 확인했습니다.
-기존 33개 특징의 보존과 545개 특징의 행 정렬, 순서 변경·실험 분리·미래 제거도 확인했습니다.
-신경망·분류기를 명시적인 모의 객체로 대체한 CLI 검사에서 CSV 형식·기본/사용자 지정 모델 경로·오프라인 오류 처리를 확인했습니다.
-이후 제공 서버에서 실제 이미지 특징 추출·학습을 실행했으며, 위 실행 결과와 공식 제출 검사 전체 통과를 사용자 확인으로 기록했습니다.
+| 조합 (cummax) | Train 5-fold | Validation 홀드아웃 | Public |
+|---|---|---|---|
+| LightGBM 0.5 + 팀원 v2(ResNet18+센서) 0.5 | 0.9059 | 0.8860 | 0.8879 |
+| LightGBM 0.3 + DINOv2 CatBoost 0.7 | 0.8953 | 0.8875 | 0.8899 |
+| LightGBM 0.4 + DINOv2 CatBoost 0.4 + GRU 0.2 (cummax) | 0.9030 | 0.9105 | 0.8917 |
+| **같은 블렌드 + 재확인 후처리 `late` (최종)** | **0.9023** | **0.9093** | **0.9004** |
+
+- 최종 선택: 두 검증 점수는 cummax와 거의 같고(무작위 실험 묶음에서 cummax 대비 승률 47%·45%), Public이 0.0087 높아 **Train·Validation·Public 셋 중 최저**가 가장 높은 조합을 골랐어요. Test 예측은 cummax 버전과 31행(0.9%)만 달라요.
+- 재확인 범위를 2·3단계까지 넓히거나 확신 기준을 0.9 이상으로 올리면 두 검증 점수가 모두 떨어졌어요 (`tools/eval_late.py`, 32가지 조합).
+- Public 패턴 확인 (`tools/public_check.py`): 우리 검증 실험 97개에서 3~5개를 뽑았을 때, Public에서 본 차이(이미지 CatBoost 단독이 블렌드보다 +0.039, LightGBM 단독이 −0.064)가 함께 나온 경우는 2만 번 중 0번이었어요. Test는 Train·Validation과 성격이 다를 가능성이 있어서, 한쪽 검증 점수에만 맞추지 않았어요.
+
+### 블렌드 단계별 성능 (5초 간격, cummax 후 — 최종 `late`와 두 검증 점수 차이 0.001 이내)
+| 단계 | 1 | 2 | 3 | 4 | 5 | 6 | Macro F1 | 9:1:1 가중 |
+|---|---|---|---|---|---|---|---|---|
+| Train 5-fold OOF (78개 실험) | 0.9996 | 0.8483 | 0.9067 | 0.9017 | 0.9034 | 0.8589 | 0.9031 | 0.9030 |
+| Validation 홀드아웃 (19개 실험) | 1.0000 | 0.8468 | 0.9456 | 0.8472 | 0.9277 | 0.9131 | 0.9134 | 0.9105 |
+
+- 가장 많이 틀리는 곳은 **2↔3단계 경계**예요. Train OOF에서 정답 2를 3으로 733행, 정답 3을 2로 845행 예측했어요. 그다음은 4↔5와 5↔6 경계예요. 1단계는 거의 완벽해요.
+- 혼동행렬 전체는 `reports/metrics.json`에 있어요 (`tools/report_metrics.py`로 재생성).
+
+- 시도했지만 채택하지 않은 것: 단계군별 가중치, seed 평균(LightGBM·CatBoost·GRU 3-seed), 2↔3단계 전용 보정 모델, TCN 시퀀스 모델, ResNet50 이미지 특징, XGBoost·우리 피처 CatBoost 추가, 로지스틱 회귀 메타 스태킹(최저 0.843), 순서형(누적) LightGBM·XGBoost·GRU, 추가 인과 피처 12개(최근 30/60초 변동성·전압-온도 결합; 검증 최저 0.9059였지만 Public 0.8587로 하락), 짧은 창 피처 12개(직전 관측 대비·15초 변화율; lgb 설정 XGBoost에서 효과 없음, GRU 채널로도 블렌드 하락), 벤팅 기준 전압·압력 피처 6개, 벤팅 이후 기준선 대비 이탈 점수 피처(온도·전압·압력의 수준과 30초 기울기 z-score, 최대·합·초과 누적; XGBoost·CatBoost 모두 Validation 하락), ExtraTrees, MiniRocket(GPU 합성곱의 길이별 수치 차이로 뒷부분 삭제 검사 실패), TabNet, Train+Validation 학습, GRU에 이미지 임베딩 채널 추가(블렌드 승률 31%), 팀원 v2 ResNet18에 이미지 변화 피처 추가. 모두 두 검증 점수의 최저점을 올리지 못했어요.
+- **이미지 변화 피처 (`dinod`, `src/rn18.emb_dynamics`)**: 2→3 전환은 센서 임계값 규칙이 없어서(일치율 최고 33%), DINOv2 임베딩이 첫 프레임·15~120초 전 프레임과 얼마나 달라졌는지, 처음 보는 화면인지 등 14개 피처를 만들었어요(과거 프레임만 사용). DINOv2 CatBoost 단독 Validation이 0.8298→0.8804로 크게 올랐고, 블렌드도 최저 0.9030→0.9067, 무작위 실험 묶음 승률 75%·76%로 검증 기준을 모두 통과했어요. 하지만 Test 예측은 6행만 달랐고 Public이 같았으며(0.8917), 재확인 후처리와 합치면 Public 0.8969로 최종(0.9004)보다 낮아 채택하지 않았어요.
+- 조건별 오류 분석: `python tools/error_analysis.py --stack_dir runs/stack_trv --data_dir <경로>`. 가장 약한 그룹은 39Ah 셀(0.749)로, 4단계가 평균 33초·5단계가 8초로 매우 짧고 급격해 30초 이상 창 피처가 전환을 늦게 잡아요(4단계 77행 중 64행을 3으로 예측).
+- 조건별 2↔3 오류의 원인 (같은 도구, `--group bat_cc=73 tr_method=2`):
+  - tr_method=2: 2·3단계에 전압이 크게 오르고(+2.5V, +7.5V) 압력도 커지지만, 3단계 승온은 작아요(dT1/dt 0.16, 나머지 1.47). 2→3 신호가 온도가 아니라 전압·압력이에요.
+  - 73Ah: 3단계가 짧고(263초, 나머지 746초) 높은 온도(93°C, 나머지 62°C)에서 시작하며 압력 상승이 커요(+54).
+  - 벤팅 기준 전압·압력 피처 6개를 넣어 봤지만 두 그룹 점수가 오르지 않았어요. 전압 관련 정보는 이미 피처에 있고, 2↔3 오류는 정보 부족보다 경계가 그룹마다 다른 신호로 정해지는 데서 생기는 것으로 판단했어요.
+- 견고성 검증: `python tools/robustness.py --stack_dir runs/stack_trv --data_dir <경로>` (실험 8·11개 무작위 추출 5,000회 점수 분포, fold별 편차, 조건별 점수)
+- 단계별 F1과 혼동행렬: `python tools/report_metrics.py --members lgb dino seq_gru --weights 0.4 0.4 0.2` (`reports/metrics.json`, 집계값만 저장)
+
+## 시계열 피처 구성
+같은 `experiment_id` 안에서 `relative_time_s` 순으로 정렬한 뒤, **현재 행과 그 이전 행만** 사용해요.
+- (선택, 최종 lgb에서는 끔) 이미지 팔레트 통계 11종(상대온도의 평균·분위수·최댓값, 청록/초록/노랑/빨강/흰색 이상 면적 비율). Validation에서 이득이 없어 최종 lgb에는 넣지 않았고, 이미지 정보는 DINOv2 멤버가 담당해요.
+- 센서 17종(전압, 온도, 압력, 가스 10종, 주위·열화상·가열 온도) 각각에 대해:
+  - 현재값, 첫 관측 대비 변화량
+  - 지금까지의 누적 최댓값·최솟값, 최댓값 대비 하락폭, 최솟값 대비 상승폭
+  - 과거 30·60·120초 구간의 변화율(초당)과 구간 평균 대비 편차
+  - 시간 구간은 **행 수가 아니라 초 단위**로 계산해요. 그래서 측정 간격이 달라도 같은 의미를 가져요.
+- 온도·압력·전압이 지금까지의 최고점을 찍은 뒤 지난 시간
+- **열폭주 사건 피처**: 열폭주 진행 단계(벤팅 → 내부단락 → 열폭주)와 단계별 센서 중앙값에 근거해 임계값을 정했어요. 사건마다 "지금까지 발생했는지"와 "처음 발생한 뒤 지난 시간"을 피처로 써요.
+  - 압력 급등, 전압 저하·최고점 대비 하락, 과충전 전압 초과
+  - 온도 임계 초과, 30초 온도 상승률 임계 초과, 열화상 온도 급락, 가스 첫 검출
+  - 발생한 사건 수
+- 실험 조건 4종(bat_class, bat_cc, soc_status, tr_method), 경과시간
+- 학습 데이터 증강: Train 실험을 10초·15초 간격으로 솎아낸 버전을 함께 학습해요.
+- 후처리: label이 실험 안에서 단조 증가한다는 점을 이용해 **지금까지의 예측 단계 누적 최댓값**을 써요. 과거 예측만 사용해요.
+- **미래 시점 관측과 실험 전체 기준 통계(전체 평균, 종료 시각, 전체 행 수 등)는 사용하지 않습니다.**
+
+## 사용한 사전학습 모델
+GRU 시퀀스 모델과 LightGBM은 사전학습 가중치 없이 대회 데이터로 처음부터 학습했어요. 사전학습 모델은 이미지 특징 추출에만 썼고, 가중치는 동결했어요.
+
+### ResNet18 (비교 실험용, 최종 모델에는 미사용)
+| 항목 | 내용 |
+|---|---|
+| 모델 | ResNet18, ImageNet-1K 사전학습 (torchvision `ResNet18_Weights.IMAGENET1K_V1`) |
+| 출처 | https://download.pytorch.org/models/resnet18-f37072fd.pth (torchvision 공식 배포, 대회 시작 전 공개) |
+| 버전 | torchvision `IMAGENET1K_V1` 가중치, 파일 SHA-256 `f37072fd47e89c5e827621c5baffa7500819f7896bbacec160b1a16c560e07ec` |
+| 라이선스 | 모델 구조 코드: torchvision BSD-3-Clause (`third_party/LICENSE.torchvision`). 가중치: torchvision 배포 조건을 따름 |
+| 사용 방식 | 가중치를 **동결**하고 fc 층을 뺀 512차원 평균풀링 특징만 사용 (대회 데이터로 미세조정하지 않음). 이미지마다 독립 계산 |
+| 저장 위치 | `weights/encoder/` (16MiB 이하 조각 3개 + `manifest.json`의 해시로 검증, 추론 때 내려받지 않음) |
+| 코드 | `src/rn18_encoder.py` (전처리·검증), `src/rn18.py` (스태킹 멤버: 팀원 CatBoost 피처 33개 + 임베딩 512개) |
+
+### DINOv2-small (최종 모델 `dino` 멤버에서 사용)
+| 항목 | 내용 |
+|---|---|
+| 모델 | DINOv2 ViT-S/14 (`facebook/dinov2-small`, Meta AI) |
+| 출처 | https://huggingface.co/facebook/dinov2-small (대회 시작 전 공개) |
+| 버전 | `weights/dinov2-small/manifest.json`의 revision(커밋 해시)과 SHA-256 |
+| 라이선스 | Apache-2.0 |
+| 사용 방식 | 가중치 **동결**, pooler 출력 384차원만 특징으로 사용 (미세조정 없음). 이미지마다 독립 계산 |
+| 저장 위치 | `weights/dinov2-small/` (`manifest.json`의 revision·SHA-256으로 검증, 추론 때 내려받지 않음) |
+| 코드 | `src/dino.py`, 내려받기 `tools/get_dinov2.py` (학습 전 1회, 추론 때는 내려받지 않음) |
+
+### ResNet50 (비교 실험용, 최종 채택 시 기재 유지)
+| 항목 | 내용 |
+|---|---|
+| 모델 | ResNet50, ImageNet-1K 사전학습 (torchvision `ResNet50_Weights.IMAGENET1K_V2`) |
+| 출처 | https://download.pytorch.org/models/resnet50-11ad3fa6.pth (torchvision 공식 배포, 대회 시작 전 공개) |
+| 버전 | torchvision `IMAGENET1K_V2` 가중치, 파일 SHA-256은 `weights/resnet50/manifest.json` (`11ad3fa6…`로 시작) |
+| 라이선스 | 모델 구조 코드: torchvision BSD-3-Clause (`third_party/LICENSE.torchvision`). 가중치: torchvision 배포 조건을 따름 |
+| 사용 방식 | 가중치 **동결**, fc 층을 뺀 전역 평균풀링 2048차원 특징만 사용 (미세조정 없음). 이미지마다 독립 계산 |
+| 저장 위치 | `weights/resnet50/` (16MiB 이하 조각 + `manifest.json`의 조각별·전체 SHA-256으로 검증, 추론 때 내려받지 않음) |
+| 코드 | `src/r50.py` (torchvision과 같은 층 이름으로 구조 정의, 전처리·검증), 내려받기 `tools/get_resnet50.py` |
+
+## 제출 전 점검
+```bash
+python tools/check_submission.py --input <경로>/validation/validation.csv --image_root <경로>/validation --model model.joblib
+```
+행 셔플, 실험 단위 분할, 뒷부분 삭제 조건에서 예측이 같은지, 빈 이미지로 바꾸면 예측이 달라지는지(이미지 사용 확인) 검사해요. 집계값만 출력해요.

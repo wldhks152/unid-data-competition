@@ -1,0 +1,161 @@
+"""모델 · Macro-F1 튜닝 · 후처리."""
+import numpy as np
+import pandas as pd
+from sklearn.metrics import f1_score
+
+from .data import KEY, T
+
+
+DEVICE = {"prefer": "gpu"}  # 학습 기본은 GPU. 스크립트의 --cpu가 "cpu"로 바꾼다.
+_LGB_DEV = {}
+
+
+def lgb_device():
+    """설치된 LightGBM이 GPU(cuda 또는 OpenCL gpu)를 지원하면 그 장치, 아니면 cpu. 한 번만 시험한다."""
+    if DEVICE["prefer"] == "cpu":
+        return "cpu"
+    if "dev" not in _LGB_DEV:
+        _LGB_DEV["dev"] = "cpu"
+        try:
+            import lightgbm as lgb
+            X = np.random.default_rng(0).random((256, 4))
+            y = (X[:, 0] > 0.5).astype(int)
+            for dev in ("cuda", "gpu"):
+                try:
+                    lgb.LGBMClassifier(n_estimators=2, device_type=dev, verbose=-1).fit(X, y)
+                    _LGB_DEV["dev"] = dev
+                    break
+                except Exception as e:  # 이 빌드에 해당 장치 지원 없음
+                    err = f"{type(e).__name__}: {str(e).splitlines()[0][:80]}"
+            if _LGB_DEV["dev"] == "cpu":
+                print(f"  [안내] 설치된 LightGBM이 GPU를 지원하지 않아 CPU로 학습 ({err})")
+        except ImportError:
+            pass
+        print(f"  LightGBM 장치: {_LGB_DEV['dev']}")
+    return _LGB_DEV["dev"]
+
+
+def make_model(seed, balanced=True):
+    """lightgbm이 있으면 LGBM(GPU 가능하면 GPU), 없으면 sklearn HistGradientBoosting (동작 확인용)."""
+    cw = "balanced" if balanced else None
+    try:
+        import lightgbm as lgb
+        dev = lgb_device()
+        return lgb.LGBMClassifier(
+            n_estimators=700, learning_rate=0.03, num_leaves=31, min_child_samples=40,
+            subsample=0.8, subsample_freq=1, colsample_bytree=0.6, reg_lambda=1.0,
+            class_weight=cw, random_state=seed, deterministic=True,
+            verbose=-1, n_jobs=-1, device_type=dev, **({"force_col_wise": True} if dev == "cpu" else {}),
+        )
+    except ImportError:
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        return HistGradientBoostingClassifier(
+            max_iter=400, learning_rate=0.05, max_leaf_nodes=31, class_weight=cw, random_state=seed,
+        )
+
+
+def tune_class_weights(P, y, classes, rounds=3, lo=0.4, hi=3.0):
+    """Macro-F1 직접 최대화: argmax(P * w)의 클래스별 배율 w를 좌표 탐색으로 찾는다.
+    OOF 확률(실험 단위 분할)로만 튜닝 → Test 정보 미사용. 범위를 좁혀 과적합 억제."""
+    grid = np.exp(np.linspace(np.log(lo), np.log(hi), 21))
+    w = np.ones(len(classes))
+    best = f1_score(y, classes[(P * w).argmax(1)], average="macro")
+    for _ in range(rounds):
+        for c in range(1, len(classes)):  # 첫 클래스는 1로 고정 (기준)
+            for g in grid:
+                w2 = w.copy()
+                w2[c] = g
+                s = f1_score(y, classes[(P * w2).argmax(1)], average="macro")
+                if s > best + 1e-6:
+                    best, w = s, w2
+    return w, best
+
+
+_CUMMAX_CACHE = {}
+
+
+def cummax_pp(F, pred):
+    """실험별 시간순 누적최대 — 과거 예측만 쓰므로 규칙 위반 아님. label이 단조증가일 때만 의미.
+    (numpy 구현: 실험 코드별 오프셋을 더해 한 번의 maximum.accumulate로 처리.
+     같은 프레임 객체를 반복해서 넘기면 정렬 순서를 재사용한다 — weakref로 객체 동일성 확인)"""
+    import weakref
+    pred = np.asarray(pred)
+    hit = _CUMMAX_CACHE.get(id(F))
+    if hit is not None and hit[0]() is F and len(hit[1]) == len(F):
+        order, off = hit[1], hit[2]
+    else:
+        codes = pd.factorize(F[KEY].to_numpy())[0].astype(np.int64)
+        order = np.lexsort((F[T].to_numpy(), codes))
+        off = codes[order] * 1000
+        if len(_CUMMAX_CACHE) > 256:
+            _CUMMAX_CACHE.clear()
+        _CUMMAX_CACHE[id(F)] = (weakref.ref(F), order, off)
+    out = np.empty_like(pred)
+    out[order] = np.maximum.accumulate(pred[order].astype(np.int64) + off) - off
+    return out
+
+def rule_gate(F, pred, mode):
+    """단계 전환 규칙으로 예측 범위를 제한한다. 사건 피처(과거만 사용)만 쓰므로 규칙 위반 아님.
+    mode "12":   t1이 한 번이라도 45°C 이상이면 ≥2, 아니면 1      (1→2 규칙 일치율 100%)
+    mode "1234": 위 + 전압 사건(V ≤ 2.45 또는 최고 대비 0.78V(가열)/1.0V(과충전) 하락)이
+                 있었으면 ≥4, 없었으면 ≤3                         (3→4 규칙 일치율 92~97%)"""
+    pred = np.asarray(pred).copy()
+    if not mode or mode == "none":
+        return pred
+    t45 = F["ev_t1_above45"].to_numpy() > 0
+    pred = np.where(t45, np.maximum(pred, 2), 1)
+    if mode == "1234":
+        heat = F["tr_method"].to_numpy() == 1
+        vev = (F["ev_v_below2.45"].to_numpy() > 0) | np.where(
+            heat, F["ev_v_drop0.78"].to_numpy() > 0, F["ev_v_drop1.0"].to_numpy() > 0)
+        pred = np.where(vev, np.maximum(pred, 4), np.minimum(pred, 3))
+        pred = np.where(t45, pred, 1)  # 45°C 전이면 무조건 1
+    return pred
+
+
+def stable_cummax_pp(F, pred, k=2):
+    """완만한 단조 후처리: 최근 k개 예측이 모두 현재 단계보다 높을 때만 단계를 올린다.
+    올릴 때는 최근 k개 중 최솟값으로 올린다. 과거 예측만 쓰므로 규칙 위반 아님. k=1이면 cummax와 같다."""
+    s = pd.Series(np.asarray(pred), index=F.index)
+    order = F.sort_values([KEY, T]).index
+    out = pd.Series(0, index=order)
+    for _, idx in s.loc[order].groupby(F.loc[order, KEY].values, sort=False).groups.items():
+        p = s.loc[idx].to_numpy()
+        cur, res = None, np.empty(len(p), dtype=int)
+        for i, x in enumerate(p):
+            if cur is None:
+                cur = x
+            else:
+                win = p[max(0, i - k + 1):i + 1]
+                if len(win) == k and win.min() > cur:
+                    cur = win.min()
+            res[i] = cur
+        out.loc[idx] = res
+    return out.loc[F.index].to_numpy()
+
+
+def predict_labels(bundle, F, post=None, P=None):
+    """저장된 bundle로 F의 라벨을 예측. 후처리 설정은 bundle["post"]에 내장되어 있다.
+    post = {"method": "none"|"cummax"|"hmm", "use_w": bool, "hmm": {...} | None}
+    P: 미리 계산한 확률(앙상블 등). 없으면 우리 fold 모델 평균."""
+    post = post or bundle["post"]
+    if P is None:
+        P = np.mean([m.predict_proba(F[bundle["feats"]]) for m in bundle["models"]], axis=0)
+    classes = bundle["classes"]
+    w = np.asarray(bundle["w"])
+    if post["method"] == "hmm":
+        from .postprocess import hmm_filter
+        P = hmm_filter(F.reset_index(drop=True), P, post["hmm"])
+        w = np.asarray(post["hmm"]["w"])
+    if not post["use_w"]:
+        w = np.ones(len(classes))
+    pred = classes[(P * w).argmax(1)]
+    pred = rule_gate(F, pred, post.get("gate"))
+    if post["method"] == "cummax":
+        pred = cummax_pp(F, pred)
+    elif post["method"].startswith("cummax") and post["method"][6:].isdigit():  # cummax2, cummax3 ...
+        pred = stable_cummax_pp(F, pred, int(post["method"][6:]))
+    elif post.get("module"):  # 다른 브랜치 후처리: POSTS[이름](frame, P, w) -> 라벨 (gate 이전 원래 확률 사용)
+        import importlib
+        pred = np.asarray(importlib.import_module(post["module"]).POSTS[post["method"]](F, P, w)).astype(int)
+    return pred.astype(int), P

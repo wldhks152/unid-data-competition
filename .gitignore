@@ -9,7 +9,10 @@ data/
 *.bin
 *.onnx
 *.h5
-weights/
+weights/*
+!weights/encoder/
+!weights/dinov2-small/
+!weights/resnet50/
 checkpoints/
 
 # Python
@@ -28,3 +31,12 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+
+# 실험 산출물 (train.py가 재생성)
+outputs/
+cache/
+*.joblib
+!model.joblib
+model_oof.csv
+submission*.csv
+weights/dinov2-small/.cache/

@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "architecture": "resnet18",
+  "weights_name": "ResNet18_Weights.IMAGENET1K_V1",
+  "source_url": "https://download.pytorch.org/models/resnet18-f37072fd.pth",
+  "full_sha256": "f37072fd47e89c5e827621c5baffa7500819f7896bbacec160b1a16c560e07ec",
+  "checkpoint_size": 46830571,
+  "embedding_dim": 512,
+  "part_size_limit": 16777216,
+  "preprocess": {
+    "name": "rgb_letterbox224_imagenet_v1",
+    "color_mode": "RGB",
+    "output_size": [
+      224,
+      224
+    ],
+    "resize": {
+      "preserve_aspect_ratio": true,
+      "long_edge": 224,
+      "interpolation": "PIL_BILINEAR",
+      "rounding": "floor(value + 0.5), minimum 1 pixel"
+    },
+    "padding": {
+      "placement": "center; extra odd pixel on right/bottom",
+      "fill_rgb": [
+        124,
+        116,
+        104
+      ]
+    },
+    "scale": "float32 / 255",
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ],
+    "output_layout": "CHW float32",
+    "random_augmentation": false
+  },
+  "parts": [
+    {
+      "name": "resnet18-f37072fd.pth.part001",
+      "sha256": "c0d66aee47595b918d8f1dab348295b9a7cc3551b20485e4393ba9205a3e6cbf",
+      "size": 16777216
+    },
+    {
+      "name": "resnet18-f37072fd.pth.part002",
+      "sha256": "2ab6b6053d334a8a0645e7735b4ad32e22f69fb5861a68c715750d394ad04c49",
+      "size": 16777216
+    },
+    {
+      "name": "resnet18-f37072fd.pth.part003",
+      "sha256": "2a32fb2fa1eed158598ec28962bc7b93e9ff19fac850a87ff07d8bd297fa13e8",
+      "size": 13276139
+    }
+  ]
+}
