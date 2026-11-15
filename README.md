@@ -15,6 +15,9 @@
 ## 파일 구성
 | 파일 | 역할 |
 |---|---|
+| `model.py` | 최종 모델이 쓰는 피처 함수 모음 (센서 시계열 피처, DINOv2 임베딩·이미지 피처, GRU 시퀀스 입력, 재확인 후처리). 구현은 `src/`·`seq/` |
+| `train.py` | 최종 `model.joblib`을 처음부터 다시 학습 (`stack.py` → `train_seq.py` → `tools/make_final.py` 순서로 실행) |
+| `test.py` | `model.joblib`을 불러와 예측만 하고 CSV 저장 (재학습·재fit 없음) |
 | `src/features.py` | 센서·이미지 통계에 대한 과거 방향 시계열 피처 생성, 누수 검사 |
 | `src/images.py` | 열화상 PNG의 의사색 팔레트 위치(보라→빨강→흰색)를 상대 온도로 환산해 분포 통계 계산 (사전학습 모델 없음) |
 | `src/model.py` | LightGBM 정의, Macro-F1용 클래스 배율 튜닝, 후처리(cummax) |
@@ -34,7 +37,7 @@
 | `tools/check_submission.py` | 제출 전 재현성·이미지 사용 점검 |
 | `tools/report_metrics.py` | 발표용 단계별 F1·혼동행렬 (집계값만) |
 | `tools/get_dinov2.py` | DINOv2-small 가중치 내려받기 (revision 고정, 해시 기록) |
-| `train.py` | (초기 버전) Train+Validation K-fold 학습 |
+| `train_v1.py` | (초기 버전, 최종 모델에는 미사용) Train+Validation K-fold 학습 |
 | `test.py` | 입력 CSV에 들어 있는 행만으로 추론하고 제출 파일 생성, 누수 자동 검사 |
 | `eda.py` | 데이터 점검 |
 | `model.joblib` | 최종 가중치 (LightGBM 6개 + DINOv2 CatBoost 6개 + GRU 6개 + 피처 목록 + 블렌드 가중치 + 후처리 설정 `late`) |
@@ -58,7 +61,10 @@
 pip install -r requirements.txt
 python tools/get_dinov2.py          # DINOv2-small 가중치 1회 내려받기 (저장소에 이미 포함되어 있으면 생략)
 
-# 학습 (Train만 학습, Validation은 홀드아웃)
+# 학습 (Train만 학습, Validation은 홀드아웃) — 아래 세 명령을 한 번에 실행
+python train.py --data_dir <battery_data_light 경로>
+
+# train.py가 실행하는 명령
 python stack.py --data_dir <battery_data_light 경로> --splits train --holdout_valid \
                 --members lgb dino --out_dir runs/stack_trv
 python train_seq.py --data_dir <battery_data_light 경로> --model gru --out_dir runs/stack_trv \
