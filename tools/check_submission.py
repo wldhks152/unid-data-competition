@@ -1,6 +1,6 @@
 """제출 전 점검 — 운영진 1차 코드 검증 조건을 흉내 낸다. 집계값만 출력한다 (행·ID·예측값은 출력하지 않음).
 
-    python tools/check_submission.py --input <경로>/valid/valid.csv --image_root <경로>/valid --model model.joblib
+    python tools/check_submission.py --input <경로>/valid/valid.csv --image_root <경로>/valid
 
 검사
   1. 행 셔플            : 입력 행 순서를 섞어도 sample_id별 예측이 같아야 한다
@@ -42,7 +42,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
     ap.add_argument("--image_root", default=None)
-    ap.add_argument("--model", default="model.joblib")
+    ap.add_argument("--model", default=str(ROOT / "model.joblib"))
     ap.add_argument("--n_exp", type=int, default=12, help="검사에 쓸 실험 수 (0=전부)")
     ap.add_argument("--blank_value", type=int, default=0, help="빈 이미지 밝기 (0=검정)")
     ap.add_argument("--seed", type=int, default=0)
