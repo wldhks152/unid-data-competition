@@ -1,7 +1,10 @@
 """추론 — 입력 CSV에 들어 있는 행만으로 예측하고 제출 파일을 만든다 (재학습 없음).
-    python test.py --input <경로>/test/test.csv --image_root <경로>/test \
-                   --model model.joblib --output submission.csv \
-                   --sample_submission <경로>/sample_submission.csv
+    python test.py --input <경로>/test/test.csv --image_root <경로>/test --output submission.csv
+
+* --model 기본값은 이 파일 옆의 model.joblib (어느 폴더에서 실행해도 같음).
+* --sample_submission을 주지 않으면 입력 CSV 폴더와 그 상위 폴더에서 sample_submission.csv를
+  찾아 행 순서를 맞춘다. 없으면 입력 CSV 순서대로 쓴다.
+* --output이 폴더면 그 안에 submission.csv로 저장한다.
 
 * 피처는 같은 실험의 현재·과거 행만 사용 → 운영진이 미래 행을 지운 CSV로 재실행해도
   남은 행의 예측은 전체 CSV로 예측했을 때와 같다 (실행 시 자동 검사).
@@ -20,6 +23,18 @@ from src.ensemble import blend_proba, team_image_features
 from src.features import make_features
 from src.images import add_image_features
 from src.model import predict_labels
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def find_sample_submission(input_csv):
+    """입력 CSV 폴더 → 상위 폴더 순으로 sample_submission.csv를 찾는다."""
+    d = os.path.dirname(os.path.abspath(input_csv))
+    for cand in (d, os.path.dirname(d)):
+        p = os.path.join(cand, "sample_submission.csv")
+        if os.path.isfile(p):
+            return p
+    return None
 
 
 def predict_df(bundle, df, timg=None):
@@ -51,9 +66,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True, help="test.csv 경로")
     ap.add_argument("--image_root", default=None, help="images/ 가 들어 있는 폴더 (기본: input CSV 폴더)")
-    ap.add_argument("--model", default="model.joblib")
-    ap.add_argument("--output", default="submission.csv")
-    ap.add_argument("--sample_submission", default=None)
+    ap.add_argument("--model", default=os.path.join(HERE, "model.joblib"), help="기본: test.py 옆의 model.joblib")
+    ap.add_argument("--output", default="submission.csv", help="저장할 CSV 경로 (폴더면 그 안에 submission.csv)")
+    ap.add_argument("--sample_submission", default=None,
+                    help="행 순서 기준 (기본: 입력 CSV 폴더나 상위 폴더의 sample_submission.csv, 없으면 입력 순서)")
     ap.add_argument("--skip_check", action="store_true", help="누수 자가검사 생략")
     # 진단용 덮어쓰기 (재학습 없이 같은 model.joblib로 변형 제출 파일을 만든다)
     ap.add_argument("--alpha", type=float, default=None, help="앙상블 LightGBM 비율 덮어쓰기 (1=LightGBM만, 0=CatBoost만)")
@@ -119,6 +135,9 @@ def main():
     if not a.skip_check:
         causality_check(bundle, df, pred, timg)
 
+    if a.sample_submission is None:
+        a.sample_submission = find_sample_submission(a.input)
+        print(f"  행 순서: {a.sample_submission or '입력 CSV 순서'}")
     if a.sample_submission:
         ss = pd.read_csv(a.sample_submission)
         sub = ss.loc[ss.sample_id.isin(pred.index), ["sample_id"]].copy()
@@ -130,6 +149,8 @@ def main():
     else:
         sub = df[["sample_id"]].copy()
     sub["label"] = pred.loc[sub.sample_id].to_numpy().astype(int)
+    if os.path.isdir(a.output) or a.output.endswith(("/", os.sep)):
+        a.output = os.path.join(a.output, "submission.csv")
     os.makedirs(os.path.dirname(os.path.abspath(a.output)), exist_ok=True)
     sub.to_csv(a.output, index=False)
     print(f"  저장: {a.output}  ({len(sub):,} rows)")

@@ -67,12 +67,14 @@ python tools/make_final.py --members lgb=runs/stack_trv/lgb.joblib dino=runs/sta
                            seq_gru=runs/stack_trv/seq_gru.joblib --weights 0.4 0.4 0.2 \
                            --post late --post_module src.late --out model.joblib
 
-# 추론
+# 추론 (재학습 없이 이 명령 하나로 최종 제출 파일 재현)
 python test.py --input <battery_data_light 경로>/test/test.csv \
                --image_root <battery_data_light 경로>/test \
-               --model model.joblib --output submission.csv \
-               --sample_submission <battery_data_light 경로>/sample_submission.csv
+               --output submission.csv
 ```
+- `--model`을 생략하면 `test.py` 옆의 `model.joblib`을 써요. 어느 폴더에서 실행해도 같아요.
+- `--sample_submission`을 생략하면 입력 CSV 폴더와 그 상위 폴더에서 `sample_submission.csv`를 찾아 행 순서를 맞추고, 없으면 입력 CSV 순서대로 써요.
+- `--output`에 폴더를 주면 그 안에 `submission.csv`로 저장해요.
 - `test.py`는 실행할 때마다 자동으로 누수 검사를 해요. 일부 실험을 임의 지점에서 잘라 다시 예측하고, 남은 행의 예측이 같은지 확인해요.
 - 입력 CSV가 잘려 있으면 `sample_submission` 순서를 따르되 **입력에 있는 행만** 출력해요.
 
