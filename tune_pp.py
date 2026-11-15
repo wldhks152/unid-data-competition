@@ -1,4 +1,4 @@
-"""후처리 튜닝 (선택) — train.py가 저장한 OOF 확률로 HMM 후처리까지 비교한다 (재학습 불필요).
+"""후처리 튜닝 (선택) — train_v1.py가 저장한 OOF 확률로 HMM 후처리까지 비교한다 (재학습 불필요).
     python tune_pp.py --model model.joblib            # 비교만
     python tune_pp.py --model model.joblib --apply    # 최고 방식을 model.joblib에 기록
 
