@@ -3,11 +3,11 @@
 **최종 모델: LightGBM(과거 방향 시계열·사건 피처) 0.4 + DINOv2 이미지 CatBoost 0.4 + 인과 GRU 시퀀스 모델 0.2 확률 앙상블 → 4~6단계 상승 재확인 후 단계 누적최대 후처리(`src/late.py`).** 열화상 이미지와 센서를 함께 사용해요. Public 0.9004177879 (제출 #34).
 
 ## 팀 정보
-- 팀명: <팀명>
-- 최종 선택 제출 파일: <리더보드에서 선택한 파일명>, Private 복원 대상
+- 팀명: 1팀
+- 최종 선택 제출 파일: `submission_team27_late.csv` (리더보드 제출 #34, Public 0.9004177879). `test.py`와 이 저장소의 `model.joblib`로 같은 파일이 재현돼요.
 
 ## 개발 환경
-- OS: <예: Ubuntu 22.04>  (`lsb_release -d`로 확인)
+- OS: Ubuntu (대회 제공 GPU 서버)
 - Python: 3.10
 - GPU: NVIDIA GPU 1장 (학습: LightGBM OpenCL, CatBoost GPU, PyTorch CUDA). 추론은 GPU가 없으면 CPU로 동작
 - 라이브러리: `requirements.txt` 참고
